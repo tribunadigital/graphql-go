@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/graph-gophers/graphql-go/errors"
@@ -45,7 +46,7 @@ func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *query.O
 	func() {
 		defer r.handlePanic(ctx)
 		sels := selected.ApplyOperation(&r.Request, s, op)
-		r.execSelections(ctx, sels, nil, s.Resolver, &out, op.Type == query.Mutation)
+		r.execSelections(ctx, sels, nil, s.Resolver, s.DirectiveResolver, &out, op.Type == query.Mutation)
 	}()
 
 	if err := ctx.Err(); err != nil {
@@ -56,17 +57,19 @@ func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *query.O
 }
 
 type fieldToExec struct {
-	field    *selected.SchemaField
-	sels     []selected.Selection
-	resolver reflect.Value
-	out      *bytes.Buffer
+	directiveField    *selected.SchemaField
+	field             *selected.SchemaField
+	sels              []selected.Selection
+	resolver          reflect.Value
+	directiveResolver reflect.Value
+	out               *bytes.Buffer
 }
 
-func (r *Request) execSelections(ctx context.Context, sels []selected.Selection, path *pathSegment, resolver reflect.Value, out *bytes.Buffer, serially bool) {
+func (r *Request) execSelections(ctx context.Context, sels []selected.Selection, path *pathSegment, resolver reflect.Value, directiveResolver reflect.Value, out *bytes.Buffer, serially bool) {
 	async := !serially && selected.HasAsyncSel(sels)
 
 	var fields []*fieldToExec
-	collectFieldsToResolve(sels, resolver, &fields, make(map[string]*fieldToExec))
+	collectFieldsToResolve(sels, resolver, directiveResolver, &fields, make(map[string]*fieldToExec))
 
 	if async {
 		var wg sync.WaitGroup
@@ -101,13 +104,13 @@ func (r *Request) execSelections(ctx context.Context, sels []selected.Selection,
 	out.WriteByte('}')
 }
 
-func collectFieldsToResolve(sels []selected.Selection, resolver reflect.Value, fields *[]*fieldToExec, fieldByAlias map[string]*fieldToExec) {
+func collectFieldsToResolve(sels []selected.Selection, resolver reflect.Value, directiveResolver reflect.Value, fields *[]*fieldToExec, fieldByAlias map[string]*fieldToExec) {
 	for _, sel := range sels {
 		switch sel := sel.(type) {
 		case *selected.SchemaField:
 			field, ok := fieldByAlias[sel.Alias]
 			if !ok { // validation already checked for conflict (TODO)
-				field = &fieldToExec{field: sel, resolver: resolver}
+				field = &fieldToExec{field: sel, resolver: resolver, directiveResolver: directiveResolver}
 				fieldByAlias[sel.Alias] = field
 				*fields = append(*fields, field)
 			}
@@ -126,7 +129,7 @@ func collectFieldsToResolve(sels []selected.Selection, resolver reflect.Value, f
 			if !out[1].Bool() {
 				continue
 			}
-			collectFieldsToResolve(sel.Sels, out[0], fields, fieldByAlias)
+			collectFieldsToResolve(sel.Sels, out[0], directiveResolver, fields, fieldByAlias)
 
 		default:
 			panic("unreachable")
@@ -179,13 +182,42 @@ func execFieldSelection(ctx context.Context, r *Request, f *fieldToExec, path *p
 		}
 
 		var in []reflect.Value
+		var inDirective []reflect.Value
+		inDirective = append(inDirective, reflect.ValueOf(traceCtx))
 		if f.field.HasContext {
 			in = append(in, reflect.ValueOf(traceCtx))
 		}
 		if f.field.ArgsPacker != nil {
 			in = append(in, f.field.PackedArgs)
 		}
-		callOut := f.resolver.Method(f.field.MethodIndex).Call(in)
+
+		var callOut []reflect.Value
+
+		if len(f.field.Directives) > 0 {
+			for _, directive := range f.field.Directives {
+				first := directive.Name.Name[0]
+				second := directive.Name.Name[1:]
+				nameDomain := strings.ToUpper(string(first)) + second
+
+				inDirective = append(inDirective, f.resolver.Method(f.field.MethodIndex), reflect.ValueOf(in))
+				directiveResult := f.directiveResolver.MethodByName(nameDomain).Call(inDirective)
+
+				callOut = directiveResult[0].Interface().([]reflect.Value)
+				if !directiveResult[1].IsNil() {
+					resolverErr := directiveResult[1].Interface().(error)
+					err := errors.Errorf("%s", resolverErr)
+					err.Path = path.toSlice()
+					err.ResolverError = resolverErr
+					if ex, ok := directiveResult[1].Interface().(extensionser); ok {
+						err.Extensions = ex.Extensions()
+					}
+					return err
+				}
+			}
+		} else {
+			callOut = f.resolver.Method(f.field.MethodIndex).Call(in)
+		}
+
 		result = callOut[0]
 		if f.field.HasError && !callOut[1].IsNil() {
 			resolverErr := callOut[1].Interface().(error)
@@ -210,10 +242,10 @@ func execFieldSelection(ctx context.Context, r *Request, f *fieldToExec, path *p
 		return
 	}
 
-	r.execSelectionSet(traceCtx, f.sels, f.field.Type, path, result, f.out)
+	r.execSelectionSet(traceCtx, f.sels, f.field.Type, path, result, f.directiveResolver, f.out)
 }
 
-func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selection, typ common.Type, path *pathSegment, resolver reflect.Value, out *bytes.Buffer) {
+func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selection, typ common.Type, path *pathSegment, resolver reflect.Value, directiveResolver reflect.Value, out *bytes.Buffer) {
 	t, nonNull := unwrapNonNull(typ)
 	switch t := t.(type) {
 	case *schema.Object, *schema.Interface, *schema.Union:
@@ -226,7 +258,7 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 			return
 		}
 
-		r.execSelections(ctx, sels, path, resolver, out, false)
+		r.execSelections(ctx, sels, path, resolver, directiveResolver, out, false)
 		return
 	}
 
@@ -250,7 +282,7 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 				go func(i int) {
 					defer wg.Done()
 					defer r.handlePanic(ctx)
-					r.execSelectionSet(ctx, sels, t.OfType, &pathSegment{path, i}, resolver.Index(i), &entryouts[i])
+					r.execSelectionSet(ctx, sels, t.OfType, &pathSegment{path, i}, resolver.Index(i), directiveResolver, &entryouts[i])
 				}(i)
 			}
 			wg.Wait()
@@ -271,7 +303,7 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 			if i > 0 {
 				out.WriteByte(',')
 			}
-			r.execSelectionSet(ctx, sels, t.OfType, &pathSegment{path, i}, resolver.Index(i), out)
+			r.execSelectionSet(ctx, sels, t.OfType, &pathSegment{path, i}, resolver.Index(i), directiveResolver, out)
 		}
 		out.WriteByte(']')
 

@@ -28,7 +28,7 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query
 
 		sels := selected.ApplyOperation(&r.Request, s, op)
 		var fields []*fieldToExec
-		collectFieldsToResolve(sels, s.Resolver, &fields, make(map[string]*fieldToExec))
+		collectFieldsToResolve(sels, s.Resolver, s.DirectiveResolver, &fields, make(map[string]*fieldToExec))
 
 		// TODO: move this check into validation.Validate
 		if len(fields) != 1 {
@@ -116,7 +116,7 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query
 						defer subR.handlePanic(subCtx)
 
 						out.WriteString(fmt.Sprintf(`{"%s":`, f.field.Alias))
-						subR.execSelectionSet(subCtx, f.sels, f.field.Type, &pathSegment{nil, f.field.Alias}, resp, &out)
+						subR.execSelectionSet(subCtx, f.sels, f.field.Type, &pathSegment{nil, f.field.Alias}, resp, s.DirectiveResolver, &out)
 						out.WriteString(`}`)
 					}()
 

@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"encoding/json"
 
@@ -69,6 +70,10 @@ type Schema struct {
 	validationTracer      trace.ValidationTracer
 	logger                log.Logger
 	useStringDescriptions bool
+}
+
+func (s *Schema) SetDirectiveResolver(resolver interface{}) {
+	s.res.DirectiveResolver = reflect.ValueOf(resolver)
 }
 
 // SchemaOpt is an option to pass to ParseSchema or MustParseSchema.

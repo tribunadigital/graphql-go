@@ -13,10 +13,12 @@ import (
 
 type Schema struct {
 	schema.Schema
-	Query        Resolvable
-	Mutation     Resolvable
-	Subscription Resolvable
-	Resolver     reflect.Value
+	Query             Resolvable
+	Mutation          Resolvable
+	Subscription      Resolvable
+	Directives        Resolvable
+	Resolver          reflect.Value
+	DirectiveResolver reflect.Value
 }
 
 type Resolvable interface {
@@ -58,7 +60,7 @@ func (*Scalar) isResolvable() {}
 func ApplyResolver(s *schema.Schema, resolver interface{}) (*Schema, error) {
 	b := newBuilder(s)
 
-	var query, mutation, subscription Resolvable
+	var query, mutation, subscription, directive Resolvable
 
 	if t, ok := s.EntryPoints["query"]; ok {
 		if err := b.assignExec(&query, t, reflect.TypeOf(resolver)); err != nil {
@@ -88,12 +90,14 @@ func ApplyResolver(s *schema.Schema, resolver interface{}) (*Schema, error) {
 		Query:        query,
 		Mutation:     mutation,
 		Subscription: subscription,
+		Directives:   directive,
 	}, nil
 }
 
 type execBuilder struct {
 	schema        *schema.Schema
 	resMap        map[typePair]*resMapEntry
+	dirMap        map[typePair]*resMapEntry
 	packerBuilder *packer.Builder
 }
 
@@ -111,12 +115,19 @@ func newBuilder(s *schema.Schema) *execBuilder {
 	return &execBuilder{
 		schema:        s,
 		resMap:        make(map[typePair]*resMapEntry),
+		dirMap:        make(map[typePair]*resMapEntry),
 		packerBuilder: packer.NewBuilder(),
 	}
 }
 
 func (b *execBuilder) finish() error {
 	for _, entry := range b.resMap {
+		for _, target := range entry.targets {
+			*target = entry.exec
+		}
+	}
+
+	for _, entry := range b.dirMap {
 		for _, target := range entry.targets {
 			*target = entry.exec
 		}
