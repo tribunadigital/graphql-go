@@ -7,21 +7,28 @@ import (
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/opentracing/opentracing-go/log"
+
 	"github.com/tribunadigital/graphql-go/errors"
+	"github.com/tribunadigital/graphql-go/internal/common"
 	"github.com/tribunadigital/graphql-go/introspection"
 )
 
 type TraceQueryFinishFunc func([]*errors.QueryError)
 type TraceFieldFinishFunc func(*errors.QueryError)
 
+type FieldType interface {
+	Kind() string
+	String() string
+}
+
 type Tracer interface {
 	TraceQuery(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, varTypes map[string]*introspection.Type) (context.Context, TraceQueryFinishFunc)
-	TraceField(ctx context.Context, label, typeName, fieldName string, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc)
+	TraceField(ctx context.Context, label, typeName, fieldName string, fieldType FieldType, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc)
 }
 
 type OpenTracingTracer struct{}
 
-func (OpenTracingTracer) TraceQuery(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, varTypes map[string]*introspection.Type) (context.Context, TraceQueryFinishFunc) {
+func (OpenTracingTracer) TraceQuery(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, _ map[string]*introspection.Type) (context.Context, TraceQueryFinishFunc) {
 	span, spanCtx := opentracing.StartSpanFromContext(ctx, "GraphQL request")
 	span.SetTag("graphql.query", queryString)
 
@@ -46,7 +53,7 @@ func (OpenTracingTracer) TraceQuery(ctx context.Context, queryString string, ope
 	}
 }
 
-func (OpenTracingTracer) TraceField(ctx context.Context, label, typeName, fieldName string, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
+func (OpenTracingTracer) TraceField(ctx context.Context, label, typeName, fieldName string, _ common.Type, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
 	if trivial {
 		return ctx, noop
 	}
@@ -75,6 +82,6 @@ func (NoopTracer) TraceQuery(ctx context.Context, queryString string, operationN
 	return ctx, func(errs []*errors.QueryError) {}
 }
 
-func (NoopTracer) TraceField(ctx context.Context, label, typeName, fieldName string, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
+func (NoopTracer) TraceField(ctx context.Context, label, typeName, fieldName string, _ common.Type, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
 	return ctx, func(err *errors.QueryError) {}
 }
