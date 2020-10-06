@@ -9,7 +9,6 @@ import (
 	"github.com/opentracing/opentracing-go/log"
 
 	"github.com/tribunadigital/graphql-go/errors"
-	"github.com/tribunadigital/graphql-go/internal/common"
 	"github.com/tribunadigital/graphql-go/introspection"
 )
 
@@ -53,7 +52,7 @@ func (OpenTracingTracer) TraceQuery(ctx context.Context, queryString string, ope
 	}
 }
 
-func (OpenTracingTracer) TraceField(ctx context.Context, label, typeName, fieldName string, _ common.Type, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
+func (OpenTracingTracer) TraceField(ctx context.Context, label, typeName, fieldName string, _ FieldType, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
 	if trivial {
 		return ctx, noop
 	}
@@ -82,6 +81,6 @@ func (NoopTracer) TraceQuery(ctx context.Context, queryString string, operationN
 	return ctx, func(errs []*errors.QueryError) {}
 }
 
-func (NoopTracer) TraceField(ctx context.Context, label, typeName, fieldName string, _ common.Type, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
+func (NoopTracer) TraceField(ctx context.Context, label, typeName, fieldName string, _ FieldType, trivial bool, args map[string]interface{}) (context.Context, TraceFieldFinishFunc) {
 	return ctx, func(err *errors.QueryError) {}
 }
