@@ -6,13 +6,27 @@ import (
 	"net/http"
 
 	graphql "github.com/tribunadigital/graphql-go"
-	"github.com/tribunadigital/graphql-go/example/scalar_map/types"
 	"github.com/tribunadigital/graphql-go/relay"
 )
 
+type Map map[string]interface{}
+
+func (Map) ImplementsGraphQLType(name string) bool {
+	return name == "Map"
+}
+
+func (m *Map) UnmarshalGraphQL(input interface{}) error {
+	val, ok := input.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("wrong type")
+	}
+	*m = val
+	return nil
+}
+
 type Args struct {
 	Name string
-	Data types.Map
+	Data Map
 }
 
 type mutation struct{}
@@ -27,9 +41,9 @@ func (_ *mutation) Hello(args Args) string {
 func main() {
 	s := `
 		scalar Map
-	
+
 		type Query {}
-		
+
 		type Mutation {
 			hello(
 				name: String!
