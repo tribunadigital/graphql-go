@@ -1,6 +1,6 @@
 package ast
 
-import "github.com/graph-gophers/graphql-go/errors"
+import "github.com/tribunadigital/graphql-go/errors"
 
 // Union types represent objects that could be one of a list of GraphQL object types, but provides no
 // guaranteed fields between those types.

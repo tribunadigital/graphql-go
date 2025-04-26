@@ -8,7 +8,7 @@ Deprecated: Use package [ast] instead. This package will be deleted in future ve
 */
 package types
 
-import "github.com/graph-gophers/graphql-go/ast"
+import "github.com/tribunadigital/graphql-go/ast"
 
 // Schema is here for backwards compatibility.
 //

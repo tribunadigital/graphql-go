@@ -7,8 +7,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/graph-gophers/graphql-go"
-	"github.com/graph-gophers/graphql-go/relay"
+	"github.com/tribunadigital/graphql-go"
+	"github.com/tribunadigital/graphql-go/relay"
 )
 
 //go:embed index.html

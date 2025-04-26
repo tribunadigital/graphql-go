@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/graph-gophers/graphql-go"
+	"github.com/tribunadigital/graphql-go"
 )
 
 type Map map[string]interface{}
@@ -39,9 +39,9 @@ func (*mutation) Hello(args Args) string {
 func Example_customScalarMap() {
 	s := `
 		scalar Map
-	
+
 		type Query {}
-		
+
 		type Mutation {
 			hello(
 				name: String!

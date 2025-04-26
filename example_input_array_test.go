@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"os"
 
-	"github.com/graph-gophers/graphql-go"
+	"github.com/tribunadigital/graphql-go"
 )
 
 type query struct{}
@@ -43,7 +43,7 @@ func Example_inputArray() {
 	    a: Int!
 	    b: Int!
 	  }
-	
+
 	  type Query {
 	    reversed(values: [String!]!): [String!]!
 	    sums(values: [IntTuple!]!): [Int!]!

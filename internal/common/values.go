@@ -1,7 +1,7 @@
 package common
 
 import (
-	"github.com/graph-gophers/graphql-go/ast"
+	"github.com/tribunadigital/graphql-go/ast"
 )
 
 func ParseInputValue(l *Lexer) *ast.InputValueDefinition {

@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/graph-gophers/graphql-go"
-	gqlerrors "github.com/graph-gophers/graphql-go/errors"
-	"github.com/graph-gophers/graphql-go/example/social"
-	"github.com/graph-gophers/graphql-go/example/starwars"
-	"github.com/graph-gophers/graphql-go/gqltesting"
-	"github.com/graph-gophers/graphql-go/introspection"
-	"github.com/graph-gophers/graphql-go/trace/tracer"
+	"github.com/tribunadigital/graphql-go"
+	gqlerrors "github.com/tribunadigital/graphql-go/errors"
+	"github.com/tribunadigital/graphql-go/example/social"
+	"github.com/tribunadigital/graphql-go/example/starwars"
+	"github.com/tribunadigital/graphql-go/gqltesting"
+	"github.com/tribunadigital/graphql-go/introspection"
+	"github.com/tribunadigital/graphql-go/trace/tracer"
 )
 
 type helloWorldResolver1 struct{}
@@ -4921,7 +4921,7 @@ func TestSchemaExtension(t *testing.T) {
 	type Query {
 		hello: String!
 	}
-	
+
 	extend schema @awesome
 	`
 	schema := graphql.MustParseSchema(sdl, &helloResolver{})

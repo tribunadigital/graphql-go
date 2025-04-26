@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/graph-gophers/graphql-go"
+	"github.com/tribunadigital/graphql-go"
 )
 
 type tquery struct{}

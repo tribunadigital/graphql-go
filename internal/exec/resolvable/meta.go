@@ -3,8 +3,8 @@ package resolvable
 import (
 	"reflect"
 
-	"github.com/graph-gophers/graphql-go/ast"
-	"github.com/graph-gophers/graphql-go/introspection"
+	"github.com/tribunadigital/graphql-go/ast"
+	"github.com/tribunadigital/graphql-go/introspection"
 )
 
 // Meta defines the details of the metadata schema for introspection.

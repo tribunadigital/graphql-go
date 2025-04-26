@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/graph-gophers/graphql-go/ast"
-	"github.com/graph-gophers/graphql-go/errors"
-	"github.com/graph-gophers/graphql-go/internal/exec/resolvable"
-	"github.com/graph-gophers/graphql-go/internal/exec/selected"
+	"github.com/tribunadigital/graphql-go/ast"
+	"github.com/tribunadigital/graphql-go/errors"
+	"github.com/tribunadigital/graphql-go/internal/exec/resolvable"
+	"github.com/tribunadigital/graphql-go/internal/exec/selected"
 )
 
 func collectFieldsToValidate(sels []selected.Selection, s *resolvable.Schema, fields *[]*fieldToValidate, fieldByAlias map[string]*fieldToValidate) {

@@ -1,6 +1,6 @@
 package ast
 
-import "github.com/graph-gophers/graphql-go/errors"
+import "github.com/tribunadigital/graphql-go/errors"
 
 // Extension type defines a GraphQL type extension.
 // Schemas, Objects, Inputs and Scalars can be extended.

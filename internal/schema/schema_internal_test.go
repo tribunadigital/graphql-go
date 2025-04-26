@@ -5,9 +5,9 @@ import (
 	"testing"
 	"text/scanner"
 
-	"github.com/graph-gophers/graphql-go/ast"
-	"github.com/graph-gophers/graphql-go/errors"
-	"github.com/graph-gophers/graphql-go/internal/common"
+	"github.com/tribunadigital/graphql-go/ast"
+	"github.com/tribunadigital/graphql-go/errors"
+	"github.com/tribunadigital/graphql-go/internal/common"
 )
 
 func TestParseSchemaDef(t *testing.T) {
@@ -321,7 +321,7 @@ func TestParseEnumDef(t *testing.T) {
 		},
 		{
 			description: "parses EnumtypeDefinition with new lines",
-			definition: `Foo { 
+			definition: `Foo {
 				BAR
 				QUX
 			}`,

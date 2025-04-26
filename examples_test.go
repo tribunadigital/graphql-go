@@ -8,8 +8,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/graph-gophers/graphql-go"
-	"github.com/graph-gophers/graphql-go/example/starwars"
+	"github.com/tribunadigital/graphql-go"
+	"github.com/tribunadigital/graphql-go/example/starwars"
 )
 
 type Resolver struct {
@@ -94,9 +94,9 @@ func ExampleMaxDepth() {
 	  query {
 	    hero(episode:EMPIRE) { # level 1
 	      name                 # level 2
-	      friends { 
+	      friends {
 	        name               # level 3
-	        friends { 
+	        friends {
 	          id               # level 4 - this would exceed the max depth
 	        }
 	      }

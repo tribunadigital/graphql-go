@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/graph-gophers/graphql-go"
+	"github.com/tribunadigital/graphql-go"
 )
 
 type exampleResolver struct{}
@@ -21,7 +21,7 @@ func Example() {
 	  schema {
 	    query: Query
 	  }
-	  
+
 	  type Query {
 	    greet(name: String!): String!
 	  }
