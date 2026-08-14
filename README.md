@@ -1,4 +1,4 @@
-# graphql-go [![Sourcegraph](https://sourcegraph.com/github.com/tribunadigital/graphql-go/-/badge.svg)](https://sourcegraph.com/github.com/tribunadigital/graphql-go?badge) [![Build Status](https://graph-gophers.semaphoreci.com/badges/graphql-go/branches/master.svg?style=shields)](https://graph-gophers.semaphoreci.com/projects/graphql-go) [![Go Report](https://goreportcard.com/badge/github.com/tribunadigital/graphql-go)](https://goreportcard.com/report/github.com/tribunadigital/graphql-go) [![GoDoc](https://godoc.org/github.com/tribunadigital/graphql-go?status.svg)](https://godoc.org/github.com/tribunadigital/graphql-go)
+# graphql-go [![Sourcegraph](https://sourcegraph.com/github.com/tribunadigital/graphql-go/-/badge.svg)](https://sourcegraph.com/github.com/tribunadigital/graphql-go?badge) [![Go](https://github.com/tribunadigital/graphql-go/actions/workflows/go.yml/badge.svg)](https://github.com/tribunadigital/graphql-go/actions/workflows/go.yml) [![Go Report](https://goreportcard.com/badge/github.com/tribunadigital/graphql-go)](https://goreportcard.com/report/github.com/tribunadigital/graphql-go) [![GoDoc](https://godoc.org/github.com/tribunadigital/graphql-go?status.svg)](https://godoc.org/github.com/tribunadigital/graphql-go)
 
 <p align="center"><img src="docs/img/logo.png" width="300"></p>
 
@@ -98,11 +98,7 @@ func (r *helloWorldResolver) Hello(ctx context.Context) (string, error) {
 ```
 
 ### Separate resolvers for different operations
-> **NOTE**: This feature is not in the stable release yet. In order to use it you need to run `go get github.com/tribunadigital/graphql-go@master` and in your `go.mod` file you will have something like:
->  ```
->  v1.5.1-0.20230216224648-5aa631d05992
->  ```
-> It is expected to be released in `v1.6.0` soon.
+This feature was released in `v1.6.0`.
 
 The GraphQL specification allows for fields with the same name defined in different query types. For example, the schema below is a valid schema definition:
 ```graphql
@@ -156,6 +152,24 @@ schema := graphql.MustParseSchema(sdl, &RootResolver{}, nil)
 - `Logger(logger log.Logger)` is used to log panics during query execution. It defaults to `exec.DefaultLogger`.
 - `PanicHandler(panicHandler errors.PanicHandler)` is used to transform panics into errors during query execution. It defaults to `errors.DefaultPanicHandler`.
 - `DisableIntrospection()` disables introspection queries.
+- `DisableFieldSelections()` disables capturing child field selections used by helper APIs (see below).
+- `OverlapValidationLimit(n int)` sets a hard cap on examined overlap pairs during validation; exceeding it emits `OverlapValidationLimitExceeded` error.
+
+### Field Selection Inspection Helpers
+
+Resolvers can introspect which immediate child fields were requested using:
+
+```go
+graphql.SelectedFieldNames(ctx)       // []string of direct child schema field names
+graphql.HasSelectedField(ctx, "name") // bool
+graphql.SortedSelectedFieldNames(ctx) // sorted copy
+```
+
+Use cases include building projection lists for databases or conditionally avoiding expensive sub-fetches. The helpers are intentionally shallow (only direct children) and fragment spreads / inline fragments are flattened with duplicates removed; meta fields (e.g. `__typename`) are excluded.
+
+Performance: selection data is computed lazily only when a helper is called. If you never call them there is effectively no additional overhead. To remove even the small context value insertion you can opt out with `DisableFieldSelections()`; helpers then return empty results.
+
+For more detail and examples see the [docs](https://godoc.org/github.com/tribunadigital/graphql-go).
 
 ### Custom Errors
 

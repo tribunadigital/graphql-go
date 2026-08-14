@@ -15,6 +15,7 @@ import (
 	"github.com/tribunadigital/graphql-go/internal/exec/resolvable"
 	"github.com/tribunadigital/graphql-go/internal/exec/selected"
 	"github.com/tribunadigital/graphql-go/internal/query"
+	"github.com/tribunadigital/graphql-go/internal/selections"
 	"github.com/tribunadigital/graphql-go/log"
 	"github.com/tribunadigital/graphql-go/trace/tracer"
 )
@@ -26,6 +27,7 @@ type Request struct {
 	Logger                   log.Logger
 	PanicHandler             errors.PanicHandler
 	SubscribeResolverTimeout time.Duration
+	DisableFieldSelections   bool
 }
 
 func (r *Request) handlePanic(ctx context.Context) {
@@ -231,6 +233,9 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 			return errors.ErrorfSkip("%s", err) // don't execute any more resolvers if context got cancelled
 		}
 
+		if len(f.sels) > 0 && !r.DisableFieldSelections {
+			ctx = selections.With(ctx, f.sels)
+		}
 		res, resolverErr := f.resolve(ctx, s)
 		if resolverErr != nil {
 			err := errors.Errorf("%s", resolverErr)

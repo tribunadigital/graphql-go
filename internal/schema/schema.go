@@ -259,12 +259,18 @@ func mergeExtensions(s *ast.Schema) error {
 func resolveNamedType(s *ast.Schema, t ast.NamedType) error {
 	switch t := t.(type) {
 	case *ast.ObjectTypeDefinition:
+		if len(t.Fields) == 0 {
+			return errors.Errorf("object type %q must define one or more fields", t.Name)
+		}
 		for _, f := range t.Fields {
 			if err := resolveField(s, f); err != nil {
 				return err
 			}
 		}
 	case *ast.InterfaceTypeDefinition:
+		if len(t.Fields) == 0 {
+			return errors.Errorf("interface type %q must define one or more fields", t.Name)
+		}
 		for _, f := range t.Fields {
 			if err := resolveField(s, f); err != nil {
 				return err
@@ -274,6 +280,9 @@ func resolveNamedType(s *ast.Schema, t ast.NamedType) error {
 			return err
 		}
 	case *ast.InputObject:
+		if len(t.Values) == 0 {
+			return errors.Errorf("input object type %q must define one or more fields", t.Name)
+		}
 		if err := resolveInputObject(s, t.Values); err != nil {
 			return err
 		}
@@ -364,9 +373,9 @@ func parseSchema(s *ast.Schema, l *common.Lexer) {
 		switch x := l.ConsumeIdent(); x {
 
 		case "schema":
-			s.SchemaDefinition.Present = true
-			s.SchemaDefinition.Loc = l.Location()
-			s.SchemaDefinition.Desc = desc
+			s.Present = true
+			s.Loc = l.Location()
+			s.Desc = desc
 			s.SchemaDefinition.Directives = common.ParseDirectives(l)
 			l.ConsumeToken('{')
 			for l.Peek() != '}' {
@@ -429,11 +438,7 @@ func parseSchema(s *ast.Schema, l *common.Lexer) {
 func parseObjectDef(l *common.Lexer) *ast.ObjectTypeDefinition {
 	object := &ast.ObjectTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
 
-	for {
-		if l.Peek() == '{' {
-			break
-		}
-
+	for l.Peek() != '{' {
 		if l.Peek() == '@' {
 			object.Directives = common.ParseDirectives(l)
 			continue
@@ -458,7 +463,6 @@ func parseObjectDef(l *common.Lexer) *ast.ObjectTypeDefinition {
 	l.ConsumeToken('}')
 
 	return object
-
 }
 
 func parseInterfaceDef(l *common.Lexer) *ast.InterfaceTypeDefinition {
@@ -531,6 +535,7 @@ func parseEnumDef(l *common.Lexer) *ast.EnumTypeDefinition {
 	l.ConsumeToken('}')
 	return enum
 }
+
 func parseDirectiveDef(l *common.Lexer) *ast.DirectiveDefinition {
 	l.ConsumeToken('@')
 	loc := l.Location()
@@ -573,7 +578,7 @@ func parseExtension(s *ast.Schema, l *common.Lexer) {
 	loc := l.Location()
 	switch x := l.ConsumeIdent(); x {
 	case "schema":
-		s.SchemaDefinition.Present = true
+		s.Present = true
 		s.SchemaDefinition.Directives = append(s.SchemaDefinition.Directives, common.ParseDirectives(l)...)
 		if l.Peek() == '{' { // in schema extensions the body is optional
 			l.ConsumeToken('{')

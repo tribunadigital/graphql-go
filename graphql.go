@@ -85,6 +85,8 @@ type Schema struct {
 	useStringDescriptions    bool
 	subscribeResolverTimeout time.Duration
 	useFieldResolvers        bool
+	disableFieldSelections   bool
+	overlapPairLimit         int
 
 	extendRes map[string]interface{}
 }
@@ -132,6 +134,15 @@ func UseFieldResolvers() SchemaOpt {
 	}
 }
 
+// DisableFieldSelections disables capturing child field selections for the
+// SelectedFieldNames / HasSelectedField helpers. When disabled, those helpers
+// will always return an empty result / false (i.e. zero-value) and no per-resolver
+// selection context is stored. This is an opt-out for applications that never intend
+// to use the feature and want to avoid even its small lazy overhead.
+func DisableFieldSelections() SchemaOpt {
+	return func(s *Schema) { s.disableFieldSelections = true }
+}
+
 // MaxDepth specifies the maximum field nesting depth in a query. The default is 0 which disables max depth checking.
 func MaxDepth(n int) SchemaOpt {
 	return func(s *Schema) {
@@ -151,6 +162,14 @@ func MaxQueryLength(n int) SchemaOpt {
 	return func(s *Schema) {
 		s.maxQueryLength = n
 	}
+}
+
+// OverlapValidationLimit caps the number of overlapping selection pairs that will be examined
+// during validation of a single operation (including fragments). A value of 0 disables the cap.
+// When the cap is exceeded validation aborts early with an error (rule: OverlapValidationLimitExceeded)
+// to protect against maliciously constructed queries designed to exhaust memory/CPU.
+func OverlapValidationLimit(n int) SchemaOpt {
+	return func(s *Schema) { s.overlapPairLimit = n }
 }
 
 // Tracer is used to trace queries and fields. It defaults to [noop.Tracer].
@@ -244,7 +263,11 @@ func (s *Schema) ValidateWithVariables(queryString string, variables map[string]
 		return []*errors.QueryError{qErr}
 	}
 
-	return validation.Validate(s.schema, doc, variables, s.maxDepth)
+	if len(doc.Operations) == 0 {
+		return []*errors.QueryError{errors.Errorf("executable document must contain at least one operation")}
+	}
+
+	return validation.Validate(s.schema, doc, variables, s.maxDepth, s.overlapPairLimit)
 }
 
 // Exec executes the given query with the schema's resolver. It panics if the schema was created
@@ -267,7 +290,7 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 	}
 
 	validationFinish := s.validationTracer.TraceValidation(ctx)
-	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
+	errs := validation.Validate(s.schema, doc, variables, s.maxDepth, s.overlapPairLimit)
 	validationFinish(errs)
 	if len(errs) != 0 {
 		return &Response{Errors: errs}
@@ -311,10 +334,11 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 			Schema:             s.schema,
 			AllowIntrospection: s.allowIntrospection == nil || s.allowIntrospection(ctx), // allow introspection by default, i.e. when allowIntrospection is nil
 		},
-		Limiter:      make(chan struct{}, s.maxParallelism),
-		Tracer:       s.tracer,
-		Logger:       s.logger,
-		PanicHandler: s.panicHandler,
+		Limiter:                make(chan struct{}, s.maxParallelism),
+		Tracer:                 s.tracer,
+		Logger:                 s.logger,
+		PanicHandler:           s.panicHandler,
+		DisableFieldSelections: s.disableFieldSelections,
 	}
 	varTypes := make(map[string]*introspection.Type)
 	for _, v := range op.Vars {
