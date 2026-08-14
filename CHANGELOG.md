@@ -1,12 +1,15 @@
 # CHANGELOG
 
+* [FEATURE] Add `ValidateDeprecated()` schema option to enable validation of deprecated fields, arguments (including directive arguments), input fields, and enum values in queries. When enabled, usage of deprecated schema elements results in validation errors. This opt-in approach allows applications to enforce deprecation policies without breaking existing clients.
+
+* [FEATURE] Support executable-document description strings on full-form operations, fragments, and variable definitions. Descriptions remain non-semantic and do not change validation or execution behavior. Executable `#` comments remain ignored.
+
 [v1.9.0](https://github.com/graph-gophers/graphql-go/releases/tag/v1.9.0) Release v1.9.0
 
 * [IMPROVEMENT] Reduce query execution allocations by reusing internal temporary buffers in the execution hot path. Add `DisableMemoryPooling()` schema option to opt out and enable pooled vs non-pooled benchmark comparison. Added a `MaxPooledBufferCap(n)` method to set the maximum buffer capacity (in bytes) that can be returned to the internal memory pool. The default limit is 16KB.
-
-* [FEATURE] Allow schema cloning and applying a resolver to a schema without one. See `Clone`, `MustClone` and `ApplyResolver` schema methods for mode details.
-
+* [FEATURE] Allow schema cloning and applying a resolver to a schema without one. See `Clone`, `MustClone` and `ApplyResolver` schema methods for more details.
 * [CHORE] Applied `go fix ./...`-style modernization across the repo to align the code with newer Go idioms and standard library helpers.
+* [CHORE] Bump Go version in go.mod file to v1.25 to be one minor version less than the latest stable Go release.
 
 [v1.8.0](https://github.com/graph-gophers/graphql-go/releases/tag/v1.8.0) Release v1.8.0
 

@@ -1161,6 +1161,257 @@ func TestInterfaceImplementsInterface(t *testing.T) {
 				return nil
 			},
 		},
+		{
+			name: "Accepts object implementing interface with additional optional argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name(format: String!, locale: String): String!
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface missing required interface argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name: String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `expects argument "format"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface with incompatible argument type",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name(format: Int!): String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `argument "format" has type "String!"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				if want, have := `defines type "Int!"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface with additional required argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name(format: String!, locale: String!): String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `additional argument "locale"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				if want, have := `must not be required`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects interface implementing interface with additional required argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			interface Entity implements Node {
+				name(format: String!, locale: String!): String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `implementing interface "Entity"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				if want, have := `must not be required`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Parses valid OneOf input type with nullable fields",
+			sdl: `
+			input FindUserInput @oneOf {
+				id: ID
+				email: String
+			}
+			type Query {
+				findUser(by: FindUserInput): String
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["FindUserInput"].(*ast.InputObject)
+				if !ok {
+					return fmt.Errorf("type %q not found", "FindUserInput")
+				}
+				if len(typ.Values) != 2 {
+					return fmt.Errorf("expected 2 fields, got %d", len(typ.Values))
+				}
+				if typ.Directives.Get("oneOf") == nil {
+					return fmt.Errorf("expected @oneOf directive on FindUserInput")
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects OneOf input type with non-nullable field",
+			sdl: `
+			input FindUserInput @oneOf {
+				id: ID!
+				email: String
+			}
+			type Query {
+				findUser(by: FindUserInput): String
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `OneOf input field FindUserInput.id must be nullable`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects OneOf input type with field default value",
+			sdl: `
+			input FindUserInput @oneOf {
+				id: ID
+				priority: Int = 1
+			}
+			type Query {
+				findUser(by: FindUserInput): String
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `OneOf input field FindUserInput.priority cannot have a default value`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects @oneOf directive on non-input type",
+			sdl: `
+			type Query @oneOf {
+				field: String
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if strings.Contains(err.Error(), "@oneOf") && strings.Contains(err.Error(), "INPUT_OBJECT") {
+					return nil
+				}
+				return fmt.Errorf("unexpected error: want error about @oneOf only on INPUT_OBJECT, have %q", err.Error())
+			},
+		},
+		{
+			name: "Accepts object implementing interface where both field and interface field are deprecated",
+			sdl: `
+			interface Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			type User implements Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				return nil
+			},
+		},
+		{
+			name: "Accepts object implementing interface where interface field is deprecated and implementing field is not",
+			sdl: `
+			interface Node {
+				id: ID! @deprecated(reason: "old")
+			}
+			type User implements Node {
+				id: ID!
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface where interface field is not deprecated but implementing field is",
+			sdl: `
+			interface Node {
+				id: ID!
+			}
+			type User implements Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			`,
+			validateError: func(err error) error {
+				msg := `graphql: interface "Node" field "id" is not deprecated but implementing type "User" marks it as deprecated`
+				if err == nil || err.Error() != msg {
+					return fmt.Errorf("expected error %q, but got %q", msg, err)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects interface implementing interface where interface field is not deprecated but implementing interface field is",
+			sdl: `
+			interface Node {
+				id: ID!
+			}
+			interface Entity implements Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			`,
+			validateError: func(err error) error {
+				msg := `graphql: interface "Node" field "id" is not deprecated but implementing interface "Entity" marks it as deprecated`
+				if err == nil || err.Error() != msg {
+					return fmt.Errorf("expected error %q, but got %q", msg, err)
+				}
+				return nil
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, err := schema.ParseSchema(tt.sdl, tt.useStringDescriptions)

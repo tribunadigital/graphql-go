@@ -114,10 +114,10 @@ func (s *NullInt) UnmarshalGraphQL(input any) error {
 		s.Value = &v
 		return nil
 	case float64:
-		coerced := int32(v)
-		if v < math.MinInt32 || v > math.MaxInt32 || float64(coerced) != v {
+		if v < math.MinInt32 || v > math.MaxInt32 || math.Trunc(v) != v {
 			return fmt.Errorf("not a 32-bit integer")
 		}
+		coerced := int32(v)
 		s.Value = &coerced
 		return nil
 	default:
@@ -155,6 +155,10 @@ func (s *NullFloat) UnmarshalGraphQL(input any) error {
 		s.Value = &coerced
 		return nil
 	case int:
+		coerced := float64(v)
+		s.Value = &coerced
+		return nil
+	case int64:
 		coerced := float64(v)
 		s.Value = &coerced
 		return nil

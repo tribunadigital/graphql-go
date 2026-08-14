@@ -26,6 +26,11 @@ type fieldInfo struct {
 	parent ast.NamedType
 }
 
+type valueTypeIssue struct {
+	loc     errors.Location
+	message string
+}
+
 type context struct {
 	schema               *ast.Schema
 	doc                  *ast.ExecutableDefinition
@@ -33,11 +38,12 @@ type context struct {
 	opErrs               map[*ast.OperationDefinition][]*errors.QueryError
 	usedVars             map[*ast.OperationDefinition]varSet
 	fieldMap             map[*ast.Field]fieldInfo
-	overlapValidated     map[selectionPair]struct{}
+	overlapValidated     map[selectionPair]bool
 	maxDepth             int
 	overlapPairLimit     int
 	overlapPairsObserved int
 	overlapLimitHit      bool
+	validateDeprecated   bool
 }
 
 func (c *context) addErr(loc errors.Location, rule string, format string, a ...any) {
@@ -57,21 +63,22 @@ type opContext struct {
 	ops []*ast.OperationDefinition
 }
 
-func newContext(s *ast.Schema, doc *ast.ExecutableDefinition, maxDepth int, overlapPairLimit int) *context {
+func newContext(s *ast.Schema, doc *ast.ExecutableDefinition, maxDepth int, overlapPairLimit int, validateDeprecated bool) *context {
 	return &context{
-		schema:           s,
-		doc:              doc,
-		opErrs:           make(map[*ast.OperationDefinition][]*errors.QueryError),
-		usedVars:         make(map[*ast.OperationDefinition]varSet),
-		fieldMap:         make(map[*ast.Field]fieldInfo),
-		overlapValidated: make(map[selectionPair]struct{}),
-		maxDepth:         maxDepth,
-		overlapPairLimit: overlapPairLimit,
+		schema:             s,
+		doc:                doc,
+		opErrs:             make(map[*ast.OperationDefinition][]*errors.QueryError),
+		usedVars:           make(map[*ast.OperationDefinition]varSet),
+		fieldMap:           make(map[*ast.Field]fieldInfo),
+		overlapValidated:   make(map[selectionPair]bool),
+		maxDepth:           maxDepth,
+		overlapPairLimit:   overlapPairLimit,
+		validateDeprecated: validateDeprecated,
 	}
 }
 
-func Validate(s *ast.Schema, doc *ast.ExecutableDefinition, variables map[string]any, maxDepth int, overlapPairLimit int) []*errors.QueryError {
-	c := newContext(s, doc, maxDepth, overlapPairLimit)
+func Validate(s *ast.Schema, doc *ast.ExecutableDefinition, variables map[string]any, maxDepth int, overlapPairLimit int, validateDeprecated bool) []*errors.QueryError {
+	c := newContext(s, doc, maxDepth, overlapPairLimit, validateDeprecated)
 
 	opNames := make(nameSet, len(doc.Operations))
 	fragUsedBy := make(map[*ast.FragmentDefinition][]*ast.OperationDefinition)
@@ -113,8 +120,20 @@ func Validate(s *ast.Schema, doc *ast.ExecutableDefinition, variables map[string
 						c.addErr(v.Default.Location(), "DefaultValuesOfCorrectType", "Variable %q of type %q is required and will not use the default value. Perhaps you meant to use type %q.", "$"+v.Name.Name, t, nn.OfType)
 					}
 
-					if ok, reason := validateValueType(opc, v.Default, t); !ok {
-						c.addErr(v.Default.Location(), "DefaultValuesOfCorrectType", "Variable %q of type %q has invalid default value %s.\n%s", "$"+v.Name.Name, t, v.Default, reason)
+					if inputType := unwrapInputObjectType(t); inputType != nil {
+						if obj, ok := v.Default.(*ast.ObjectValue); ok {
+							issues := collectInputObjectValueIssues(opc, obj, inputType)
+							if len(issues) > 0 {
+								for _, issue := range issues {
+									c.addErr(issue.loc, "ValuesOfCorrectTypeRule", "%s", issue.message)
+								}
+								continue
+							}
+						}
+					}
+
+					if ok, errLoc, reason := validateValueType(opc, v.Default, t); !ok {
+						c.addErr(errLoc, "ValuesOfCorrectTypeRule", "%s", reason)
 					}
 				}
 			}
@@ -136,6 +155,10 @@ func Validate(s *ast.Schema, doc *ast.ExecutableDefinition, variables map[string
 			entryPoint = s.RootOperationTypes["subscription"]
 		default:
 			panic("unreachable")
+		}
+
+		if op.Type == query.Subscription && entryPoint != nil {
+			validateSingleFieldSubscription(opc, op, entryPoint)
 		}
 
 		validateSelectionSet(opc, op.Selections, entryPoint)
@@ -322,10 +345,7 @@ func validateSelectionSet(c *opContext, sels []ast.Selection, t ast.NamedType) {
 		validateSelection(c, sel, t)
 		switch s := sel.(type) {
 		case *ast.Field:
-			name := s.Alias.Name
-			if name == "" {
-				name = s.Name.Name
-			}
+			name := fieldResponseName(s)
 			fieldGroups[name] = append(fieldGroups[name], sel)
 		default:
 			fragments = append(fragments, sel)
@@ -348,7 +368,7 @@ func validateSelectionSet(c *opContext, sels []ast.Selection, t ast.NamedType) {
 				if c.overlapLimitHit {
 					break
 				}
-				c.validateOverlap(a, b, nil, nil)
+				c.validateOverlap(a, b, nil, nil, false)
 			}
 		}
 	}
@@ -364,20 +384,208 @@ func validateSelectionSet(c *opContext, sels []ast.Selection, t ast.NamedType) {
 			if c.overlapLimitHit {
 				break
 			}
-			// Compare fragment with all fields
-			for _, fld := range allFields {
-				if c.overlapLimitHit {
-					break
-				}
-				c.validateOverlap(fa, fld, nil, nil)
-			}
+			// Compare fragment with fields. If fragment has only direct field selections,
+			// compare by matching response name groups; otherwise conservatively compare
+			// against all fields.
+			compareSelectionAgainstFields(c, fa, fieldGroups, allFields)
 			// Compare fragment with following fragments
 			for _, fb := range fragments[i+1:] {
 				if c.overlapLimitHit {
 					break
 				}
-				c.validateOverlap(fa, fb, nil, nil)
+				c.validateOverlap(fa, fb, nil, nil, false)
 			}
+		}
+	}
+}
+
+func fieldResponseName(f *ast.Field) string {
+	if f.Alias.Name != "" {
+		return f.Alias.Name
+	}
+	return f.Name.Name
+}
+
+func validateSingleFieldSubscription(c *opContext, op *ast.OperationDefinition, subscriptionType ast.NamedType) {
+	fields := make(map[string][]*ast.Field)
+	responseOrder := make([]string, 0)
+	visitedFragments := make(map[string]struct{})
+	forbiddenDirectiveLocs := make([]errors.Location, 0)
+
+	collectSubscriptionRootFields(c.context, subscriptionType, op.Selections, fields, &responseOrder, visitedFragments, &forbiddenDirectiveLocs)
+
+	if len(forbiddenDirectiveLocs) > 0 {
+		c.addErrMultiLoc(forbiddenDirectiveLocs, "SingleFieldSubscriptionsRule", "%s", subscriptionDirectivesNotAllowedMessage(op.Name.Name))
+		return
+	}
+
+	if len(responseOrder) > 1 {
+		locs := make([]errors.Location, 0)
+		for _, key := range responseOrder[1:] {
+			for _, field := range fields[key] {
+				locs = append(locs, field.Alias.Loc)
+			}
+		}
+
+		if len(locs) > 0 {
+			c.addErrMultiLoc(locs, "SingleFieldSubscriptionsRule", "%s", singleFieldSubscriptionMessage(op.Name.Name))
+		}
+	}
+
+	for _, key := range responseOrder {
+		fieldNodes := fields[key]
+		if len(fieldNodes) == 0 {
+			continue
+		}
+
+		field := fieldNodes[0]
+		if strings.HasPrefix(field.Name.Name, "__") {
+			locs := make([]errors.Location, 0, len(fieldNodes))
+			for _, node := range fieldNodes {
+				locs = append(locs, node.Alias.Loc)
+			}
+			c.addErrMultiLoc(locs, "SingleFieldSubscriptionsRule", "%s", introspectionSubscriptionMessage(op.Name.Name))
+		}
+	}
+}
+
+func collectSubscriptionRootFields(
+	c *context,
+	runtimeType ast.NamedType,
+	selections []ast.Selection,
+	fields map[string][]*ast.Field,
+	responseOrder *[]string,
+	visitedFragments map[string]struct{},
+	forbiddenDirectiveLocs *[]errors.Location,
+) {
+	for _, selection := range selections {
+		switch s := selection.(type) {
+		case *ast.Field:
+			appendSkipIncludeDirectiveLocs(s.Directives, forbiddenDirectiveLocs)
+			key := fieldResponseName(s)
+			if _, ok := fields[key]; !ok {
+				*responseOrder = append(*responseOrder, key)
+			}
+			fields[key] = append(fields[key], s)
+
+		case *ast.InlineFragment:
+			appendSkipIncludeDirectiveLocs(s.Directives, forbiddenDirectiveLocs)
+			if !fragmentConditionMatches(c, runtimeType, s.On) {
+				continue
+			}
+			collectSubscriptionRootFields(c, runtimeType, s.Selections, fields, responseOrder, visitedFragments, forbiddenDirectiveLocs)
+
+		case *ast.FragmentSpread:
+			appendSkipIncludeDirectiveLocs(s.Directives, forbiddenDirectiveLocs)
+
+			fragName := s.Name.Name
+			if _, ok := visitedFragments[fragName]; ok {
+				continue
+			}
+			visitedFragments[fragName] = struct{}{}
+
+			frag := c.doc.Fragments.Get(fragName)
+			if frag == nil || !fragmentConditionMatches(c, runtimeType, frag.On) {
+				continue
+			}
+
+			collectSubscriptionRootFields(c, runtimeType, frag.Selections, fields, responseOrder, visitedFragments, forbiddenDirectiveLocs)
+		}
+	}
+}
+
+func fragmentConditionMatches(c *context, runtimeType ast.NamedType, on ast.TypeName) bool {
+	if on.Name == "" {
+		return true
+	}
+
+	fragType := unwrapType(resolveType(c, &on))
+	if runtimeType == nil || fragType == nil {
+		return false
+	}
+
+	return compatible(runtimeType, fragType)
+}
+
+func appendSkipIncludeDirectiveLocs(directives ast.DirectiveList, locs *[]errors.Location) {
+	for _, d := range directives {
+		switch d.Name.Name {
+		case "skip", "include":
+			*locs = append(*locs, d.Name.Loc)
+		}
+	}
+}
+
+func singleFieldSubscriptionMessage(operationName string) string {
+	if operationName != "" {
+		return fmt.Sprintf("Subscription %q must select only one top level field.", operationName)
+	}
+
+	return "Anonymous Subscription must select only one top level field."
+}
+
+func introspectionSubscriptionMessage(operationName string) string {
+	if operationName != "" {
+		return fmt.Sprintf("Subscription %q must not select an introspection top level field.", operationName)
+	}
+
+	return "Anonymous Subscription must not select an introspection top level field."
+}
+
+func subscriptionDirectivesNotAllowedMessage(operationName string) string {
+	if operationName != "" {
+		return fmt.Sprintf("Subscription %q must not use `@skip` or `@include` directives in the top level selection.", operationName)
+	}
+
+	return "Anonymous Subscription must not use `@skip` or `@include` directives in the top level selection."
+}
+
+func selectionTopLevelFieldNames(c *context, sel ast.Selection) (map[string]struct{}, bool) {
+	names := make(map[string]struct{})
+
+	getNames := func(selections []ast.Selection) (map[string]struct{}, bool) {
+		for _, child := range selections {
+			field, ok := child.(*ast.Field)
+			if !ok {
+				return nil, true
+			}
+			names[fieldResponseName(field)] = struct{}{}
+		}
+		return names, false
+	}
+
+	switch s := sel.(type) {
+	case *ast.InlineFragment:
+		return getNames(s.Selections)
+	case *ast.FragmentSpread:
+		frag := c.doc.Fragments.Get(s.Name.Name)
+		if frag == nil {
+			return names, false
+		}
+		return getNames(frag.Selections)
+	default:
+		return nil, true
+	}
+}
+
+func compareSelectionAgainstFields(c *opContext, sel ast.Selection, fieldGroups map[string][]ast.Selection, allFields []ast.Selection) {
+	fieldNames, exhaustive := selectionTopLevelFieldNames(c.context, sel)
+	if exhaustive {
+		for _, fld := range allFields {
+			if c.overlapLimitHit {
+				return
+			}
+			c.validateOverlap(fld, sel, nil, nil, false)
+		}
+		return
+	}
+
+	for name := range fieldNames {
+		for _, fld := range fieldGroups[name] {
+			if c.overlapLimitHit {
+				return
+			}
+			c.validateOverlap(fld, sel, nil, nil, false)
 		}
 	}
 }
@@ -422,10 +630,48 @@ func validateSelection(c *opContext, sel ast.Selection, t ast.NamedType) {
 
 		validateArgumentLiterals(c, sel.Arguments)
 		if f != nil {
+			if c.validateDeprecated {
+				if reason, ok := deprecatedReason(f.Directives); ok && t != nil {
+					c.addErr(sel.Name.Loc, "NoDeprecatedCustomRule", "The field %s.%s is deprecated. %s", t.TypeName(), fieldName, reason)
+				}
+			}
+
 			validateArgumentTypes(c, sel.Arguments, f.Arguments, sel.Alias.Loc,
 				func() string { return fmt.Sprintf(`field "%s.%s"`, t, fieldName) },
 				func() string { return fmt.Sprintf("Field %q", fieldName) },
 			)
+
+			if t != nil {
+				for _, selArg := range sel.Arguments {
+					argDecl := f.Arguments.Get(selArg.Name.Name)
+					if argDecl == nil {
+						continue
+					}
+					if c.validateDeprecated {
+						if reason, ok := deprecatedReason(argDecl.Directives); ok {
+							c.addErr(selArg.Name.Loc, "NoDeprecatedCustomRule", "Field %q argument %q is deprecated. %s", t.TypeName()+"."+fieldName, selArg.Name.Name, reason)
+						}
+					}
+				}
+
+				for _, directive := range sel.Directives {
+					directiveDef, ok := c.schema.Directives[directive.Name.Name]
+					if !ok {
+						continue
+					}
+					for _, selArg := range directive.Arguments {
+						argDecl := directiveDef.Arguments.Get(selArg.Name.Name)
+						if argDecl == nil {
+							continue
+						}
+						if c.validateDeprecated {
+							if reason, ok := deprecatedReason(argDecl.Directives); ok {
+								c.addErr(selArg.Name.Loc, "NoDeprecatedCustomRule", "Directive %q argument %q is deprecated. %s", "@"+directive.Name.Name, selArg.Name.Name, reason)
+							}
+						}
+					}
+				}
+			}
 		}
 
 		var ft ast.Type
@@ -584,7 +830,7 @@ func detectFragmentCycleSel(c *context, sel ast.Selection, fragVisited map[*ast.
 	}
 }
 
-func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[]errors.Location) {
+func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[]errors.Location, parentMutuallyExclusive bool) {
 	if a == b {
 		return
 	}
@@ -592,14 +838,20 @@ func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[
 	// Optimisation 1: store only one direction of the pair to halve memory and lookups.
 	pa := reflect.ValueOf(a).Pointer()
 	pb := reflect.ValueOf(b).Pointer()
-	if pb < pa { // canonical ordering
-		a, b = b, a
-	}
 	key := selectionPair{a: a, b: b}
-	if _, ok := c.overlapValidated[key]; ok {
-		return
+	if pb < pa { // canonical ordering for key only
+		key = selectionPair{a: b, b: a}
 	}
-	c.overlapValidated[key] = struct{}{}
+	if existing, ok := c.overlapValidated[key]; ok {
+		// Mutually exclusive comparisons are always safe to skip once this pair was seen.
+		if parentMutuallyExclusive {
+			return
+		}
+		if !existing {
+			return
+		}
+	}
+	c.overlapValidated[key] = parentMutuallyExclusive
 
 	if c.overlapPairLimit > 0 && !c.overlapLimitHit {
 		c.overlapPairsObserved++
@@ -626,10 +878,7 @@ func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[
 	case *ast.Field:
 		switch b := b.(type) {
 		case *ast.Field:
-			if b.Alias.Loc.Before(a.Alias.Loc) {
-				a, b = b, a
-			}
-			if reasons2, locs2 := c.validateFieldOverlap(a, b); len(reasons2) != 0 {
+			if reasons2, locs2 := c.validateFieldOverlap(a, b, parentMutuallyExclusive); len(reasons2) != 0 {
 				locs2 = append(locs2, a.Alias.Loc, b.Alias.Loc)
 				if reasons == nil {
 					c.addErrMultiLoc(locs2, "OverlappingFieldsCanBeMergedRule", "Fields %q conflict because %s. Use different aliases on the fields to fetch both if this was intentional.", a.Alias.Name, strings.Join(reasons2, " and "))
@@ -643,13 +892,13 @@ func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[
 
 		case *ast.InlineFragment:
 			for _, sel := range b.Selections {
-				c.validateOverlap(a, sel, reasons, locs)
+				c.validateOverlap(a, sel, reasons, locs, parentMutuallyExclusive)
 			}
 
 		case *ast.FragmentSpread:
 			if frag := c.doc.Fragments.Get(b.Name.Name); frag != nil {
 				for _, sel := range frag.Selections {
-					c.validateOverlap(a, sel, reasons, locs)
+					c.validateOverlap(a, sel, reasons, locs, parentMutuallyExclusive)
 				}
 			}
 
@@ -659,13 +908,13 @@ func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[
 
 	case *ast.InlineFragment:
 		for _, sel := range a.Selections {
-			c.validateOverlap(sel, b, reasons, locs)
+			c.validateOverlap(sel, b, reasons, locs, parentMutuallyExclusive)
 		}
 
 	case *ast.FragmentSpread:
 		if frag := c.doc.Fragments.Get(a.Name.Name); frag != nil {
 			for _, sel := range frag.Selections {
-				c.validateOverlap(sel, b, reasons, locs)
+				c.validateOverlap(sel, b, reasons, locs, parentMutuallyExclusive)
 			}
 		}
 
@@ -674,7 +923,7 @@ func (c *context) validateOverlap(a, b ast.Selection, reasons *[]string, locs *[
 	}
 }
 
-func (c *context) validateFieldOverlap(a, b *ast.Field) ([]string, []errors.Location) {
+func (c *context) validateFieldOverlap(a, b *ast.Field, parentMutuallyExclusive bool) ([]string, []errors.Location) {
 	if a.Alias.Name != b.Alias.Name {
 		return nil, nil
 	}
@@ -689,7 +938,8 @@ func (c *context) validateFieldOverlap(a, b *ast.Field) ([]string, []errors.Loca
 
 	at := c.fieldMap[a].parent
 	bt := c.fieldMap[b].parent
-	if at == nil || bt == nil || at == bt {
+	areMutuallyExclusive := parentMutuallyExclusive || mutuallyExclusiveParents(at, bt)
+	if !areMutuallyExclusive {
 		if a.Name.Name != b.Name.Name {
 			return []string{fmt.Sprintf("%q and %q are different fields", a.Name.Name, b.Name.Name)}, nil
 		}
@@ -716,10 +966,7 @@ func (c *context) validateFieldOverlap(a, b *ast.Field) ([]string, []errors.Loca
 	var bNonField []ast.Selection
 	for _, bs := range b.SelectionSet {
 		if f, ok := bs.(*ast.Field); ok {
-			name := f.Alias.Name
-			if name == "" { // alias may be empty, fall back to field name
-				name = f.Name.Name
-			}
+			name := fieldResponseName(f)
 			bFieldIndex[name] = append(bFieldIndex[name], bs)
 			continue
 		}
@@ -728,28 +975,34 @@ func (c *context) validateFieldOverlap(a, b *ast.Field) ([]string, []errors.Loca
 
 	for _, a2 := range a.SelectionSet {
 		if af, ok := a2.(*ast.Field); ok {
-			name := af.Alias.Name
-			if name == "" {
-				name = af.Name.Name
-			}
+			name := fieldResponseName(af)
 			// Compare only against same-name fields + all non-field selections.
 			if matches := bFieldIndex[name]; len(matches) != 0 {
 				for _, bMatch := range matches {
-					c.validateOverlap(a2, bMatch, &reasons, &locs)
+					c.validateOverlap(a2, bMatch, &reasons, &locs, areMutuallyExclusive)
 				}
 			}
 			for _, bnf := range bNonField {
-				c.validateOverlap(a2, bnf, &reasons, &locs)
+				c.validateOverlap(a2, bnf, &reasons, &locs, areMutuallyExclusive)
 			}
 			continue
 		}
 		// For fragments / inline fragments we still need to compare against every selection in B.
 		for _, b2 := range b.SelectionSet {
-			c.validateOverlap(a2, b2, &reasons, &locs)
+			c.validateOverlap(a2, b2, &reasons, &locs, areMutuallyExclusive)
 		}
 	}
 
 	return reasons, locs
+}
+
+func mutuallyExclusiveParents(a, b ast.NamedType) bool {
+	if a == nil || b == nil || a == b {
+		return false
+	}
+	_, aIsObject := a.(*ast.ObjectTypeDefinition)
+	_, bIsObject := b.(*ast.ObjectTypeDefinition)
+	return aIsObject && bIsObject
 }
 
 func argumentsConflict(a, b ast.ArgumentList) bool {
@@ -826,6 +1079,20 @@ func validateDirectives(c *opContext, loc string, directives ast.DirectiveList) 
 			func() string { return fmt.Sprintf("directive %q", "@"+dirName) },
 			func() string { return fmt.Sprintf("Directive %q", "@"+dirName) },
 		)
+
+		if loc != "FIELD" {
+			for _, selArg := range d.Arguments {
+				argDecl := dd.Arguments.Get(selArg.Name.Name)
+				if argDecl == nil {
+					continue
+				}
+				if c.validateDeprecated {
+					if reason, ok := deprecatedReason(argDecl.Directives); ok {
+						c.addErr(selArg.Name.Loc, "NoDeprecatedCustomRule", "Directive %q argument %q is deprecated. %s", "@"+dirName, selArg.Name.Name, reason)
+					}
+				}
+			}
+		}
 	}
 
 	// Iterating in the declared order, rather than using the directiveNames ordering which is random
@@ -887,8 +1154,8 @@ func validateArgumentTypes(c *opContext, args ast.ArgumentList, argDecls ast.Arg
 			continue
 		}
 		value := selArg.Value
-		if ok, reason := validateValueType(c, value, arg.Type); !ok {
-			c.addErr(value.Location(), "ArgumentsOfCorrectType", "Argument %q has invalid value %s.\n%s", arg.Name.Name, value, reason)
+		if ok, errLoc, reason := validateValueType(c, value, arg.Type); !ok {
+			c.addErr(errLoc, "ValuesOfCorrectTypeRule", "%s", reason)
 		}
 	}
 	for _, decl := range argDecls {
@@ -955,13 +1222,13 @@ func validateLiteral(c *opContext, l ast.Value) {
 				})
 				continue
 			}
-			validateValueType(c, l, resolveType(c.context, v.Type))
+			_, _, _ = validateValueType(c, l, resolveType(c.context, v.Type))
 			c.usedVars[op][v] = struct{}{}
 		}
 	}
 }
 
-func validateValueType(c *opContext, v ast.Value, t ast.Type) (bool, string) {
+func validateValueType(c *opContext, v ast.Value, t ast.Type) (bool, errors.Location, string) {
 	if v, ok := v.(*ast.Variable); ok {
 		for _, op := range c.ops {
 			if v2 := op.Vars.Get(v.Name); v2 != nil {
@@ -976,111 +1243,255 @@ func validateValueType(c *opContext, v ast.Value, t ast.Type) (bool, string) {
 				}
 			}
 		}
-		return true, ""
+		return true, errors.Location{}, ""
 	}
 
 	if nn, ok := t.(*ast.NonNull); ok {
 		if isNull(v) {
-			return false, fmt.Sprintf("Expected %q, found null.", t)
+			return false, v.Location(), fmt.Sprintf("Expected value of type %q, found null.", t)
 		}
 		t = nn.OfType
 	}
 	if isNull(v) {
-		return true, ""
+		return true, errors.Location{}, ""
 	}
 
 	switch t := t.(type) {
 	case *ast.ScalarTypeDefinition, *ast.EnumTypeDefinition:
-		if lit, ok := v.(*ast.PrimitiveValue); ok {
-			if validateBasicLit(lit, t) {
-				return true, ""
-			}
-			return false, fmt.Sprintf("Expected type %q, found %s.", t, v)
+		lit, ok := v.(*ast.PrimitiveValue)
+		if !ok {
+			return true, errors.Location{}, ""
 		}
-		return true, ""
+
+		isValid, reason := validateBasicLit(lit, t)
+		if !isValid {
+			return false, lit.Location(), reason
+		}
+
+		enumType, isEnum := t.(*ast.EnumTypeDefinition)
+		if !isEnum || lit.Type != scanner.Ident {
+			return true, errors.Location{}, ""
+		}
+
+		for _, option := range enumType.EnumValuesDefinition {
+			if option.EnumValue != lit.Text {
+				continue
+			}
+			if c.validateDeprecated {
+				if depReason, deprecated := deprecatedReason(option.Directives); deprecated {
+					c.addErr(lit.Location(), "NoDeprecatedCustomRule", "The enum value %q is deprecated. %s", enumType.Name+"."+option.EnumValue, depReason)
+				}
+			}
+			break
+		}
+		return true, errors.Location{}, ""
 
 	case *ast.List:
 		list, ok := v.(*ast.ListValue)
 		if !ok {
 			return validateValueType(c, v, t.OfType) // single value instead of list
 		}
-		for i, entry := range list.Values {
-			if ok, reason := validateValueType(c, entry, t.OfType); !ok {
-				return false, fmt.Sprintf("In element #%d: %s", i, reason)
+		for _, entry := range list.Values {
+			if ok, errLoc, reason := validateValueType(c, entry, t.OfType); !ok {
+				return false, errLoc, reason
 			}
 		}
-		return true, ""
+		return true, errors.Location{}, ""
 
 	case *ast.InputObject:
+		orig := v
 		v, ok := v.(*ast.ObjectValue)
 		if !ok {
-			return false, fmt.Sprintf("Expected %q, found not an object.", t)
+			return false, orig.Location(), fmt.Sprintf("Expected value of type %q, found %s.", t, orig)
 		}
+
+		providedFields := make(map[string]struct{}, len(v.Fields))
 		for _, f := range v.Fields {
 			name := f.Name.Name
+			providedFields[name] = struct{}{}
 			iv := t.Values.Get(name)
 			if iv == nil {
-				return false, fmt.Sprintf("In field %q: Unknown field.", name)
+				suggestion := makeSuggestion("Did you mean", t.Values.Names(), name)
+				return false, f.Name.Loc, fmt.Sprintf("Field %q is not defined by type %q.%s", name, t.Name, suggestion)
 			}
-			if ok, reason := validateValueType(c, f.Value, iv.Type); !ok {
-				return false, fmt.Sprintf("In field %q: %s", name, reason)
+			if depReason, deprecated := deprecatedReason(iv.Directives); deprecated && c.validateDeprecated {
+				c.addErr(f.Name.Loc, "NoDeprecatedCustomRule", "The input field %s.%s is deprecated. %s", t.Name, iv.Name.Name, depReason)
+			}
+			if ok, errLoc, reason := validateValueType(c, f.Value, iv.Type); !ok {
+				return false, errLoc, reason
 			}
 		}
 		for _, iv := range t.Values {
-			found := false
-			for _, f := range v.Fields {
-				if f.Name.Name == iv.Name.Name {
-					found = true
-					break
-				}
+			if _, found := providedFields[iv.Name.Name]; found {
+				continue
 			}
-			if !found {
-				if _, ok := iv.Type.(*ast.NonNull); ok && iv.Default == nil {
-					return false, fmt.Sprintf("In field %q: Expected %q, found null.", iv.Name.Name, iv.Type)
+			if _, ok := iv.Type.(*ast.NonNull); ok && iv.Default == nil {
+				return false, v.Location(), fmt.Sprintf("Field %q of required type %q was not provided.", t.Name+"."+iv.Name.Name, iv.Type)
+			}
+		}
+
+		// Validate @oneOf constraint: exactly one non-null field must be provided
+		if t.Directives.Get("oneOf") != nil {
+			if len(v.Fields) != 1 {
+				c.addErr(v.Location(), "ValuesOfCorrectTypeRule", "OneOf Input Object %q must specify exactly one key.", t.Name)
+				return true, errors.Location{}, ""
+			}
+
+			f := v.Fields[0]
+
+			// Check for explicit null values
+			if _, isNull := f.Value.(*ast.NullValue); isNull {
+				c.addErr(v.Location(), "ValuesOfCorrectTypeRule", "Field %q must be non-null.", t.Name+"."+f.Name.Name)
+				return true, errors.Location{}, ""
+			}
+
+			// Check for nullable variables
+			if varRef, isVar := f.Value.(*ast.Variable); isVar {
+				for _, op := range c.ops {
+					if varDef := op.Vars.Get(varRef.Name); varDef != nil {
+						if _, ok := varDef.Type.(*ast.NonNull); !ok {
+							varType := varDef.Type
+							if resolved := resolveType(c.context, varDef.Type); resolved != nil {
+								varType = resolved
+							}
+							c.addErrMultiLoc([]errors.Location{varDef.Loc, varRef.Loc}, "VariablesInAllowedPositionRule", "Variable %q is of type %q but must be non-nullable to be used for OneOf Input Object %q.", "$"+varRef.Name, varType, t.Name)
+							return true, errors.Location{}, ""
+						}
+					}
 				}
 			}
 		}
-		return true, ""
+
+		return true, errors.Location{}, ""
 	}
 
-	return false, fmt.Sprintf("Expected type %q, found %s.", t, v)
+	return false, v.Location(), fmt.Sprintf("Expected type %q, found %s.", t, v)
 }
 
-func validateBasicLit(v *ast.PrimitiveValue, t ast.Type) bool {
+func deprecatedReason(directives ast.DirectiveList) (string, bool) {
+	deprecated := directives.Get("deprecated")
+	if deprecated == nil {
+		return "", false
+	}
+	arg, ok := deprecated.Arguments.Get("reason")
+	if !ok {
+		return "No longer supported", true
+	}
+	reason, ok := arg.Deserialize(nil).(string)
+	if !ok || reason == "" {
+		return "No longer supported", true
+	}
+	return reason, true
+}
+
+func unwrapInputObjectType(t ast.Type) *ast.InputObject {
+	for {
+		switch tt := t.(type) {
+		case *ast.NonNull:
+			t = tt.OfType
+		case *ast.InputObject:
+			return tt
+		default:
+			return nil
+		}
+	}
+}
+
+func collectInputObjectValueIssues(c *opContext, obj *ast.ObjectValue, inputType *ast.InputObject) []valueTypeIssue {
+	issues := make([]valueTypeIssue, 0)
+	for _, field := range obj.Fields {
+		decl := inputType.Values.Get(field.Name.Name)
+		if decl == nil {
+			continue
+		}
+		if ok, errLoc, reason := validateValueType(c, field.Value, decl.Type); !ok {
+			issues = append(issues, valueTypeIssue{loc: errLoc, message: reason})
+		}
+	}
+	return issues
+}
+
+func validateBasicLit(v *ast.PrimitiveValue, t ast.Type) (bool, string) {
 	switch t := t.(type) {
 	case *ast.ScalarTypeDefinition:
 		switch t.Name {
 		case "Int":
-			if v.Type != scanner.Int {
-				return false
+			if v.Type == scanner.Int {
+				if validateBuiltInScalar(v.Text, "Int") {
+					return true, ""
+				}
+				return false, fmt.Sprintf("Int cannot represent non 32-bit signed integer value: %s", v)
 			}
-			return validateBuiltInScalar(v.Text, "Int")
+			return false, fmt.Sprintf("Int cannot represent non-integer value: %s", v)
 		case "Float":
-			return (v.Type == scanner.Int || v.Type == scanner.Float) && validateBuiltInScalar(v.Text, "Float")
+			if v.Type == scanner.Int || v.Type == scanner.Float {
+				if validateBuiltInScalar(v.Text, "Float") {
+					return true, ""
+				}
+			}
+			return false, fmt.Sprintf("Float cannot represent non numeric value: %s", v)
 		case "String":
-			return v.Type == scanner.String && validateBuiltInScalar(v.Text, "String")
+			if v.Type == scanner.String && validateBuiltInScalar(v.Text, "String") {
+				return true, ""
+			}
+			return false, fmt.Sprintf("String cannot represent a non string value: %s", v)
 		case "Boolean":
-			return v.Type == scanner.Ident && validateBuiltInScalar(v.Text, "Boolean")
+			if v.Type == scanner.Ident && validateBuiltInScalar(v.Text, "Boolean") {
+				return true, ""
+			}
+			return false, fmt.Sprintf("Boolean cannot represent a non boolean value: %s", v)
 		case "ID":
-			return (v.Type == scanner.Int && validateBuiltInScalar(v.Text, "Int")) || (v.Type == scanner.String && validateBuiltInScalar(v.Text, "String"))
+			if (v.Type == scanner.Int && validateBuiltInScalar(v.Text, "Int")) || (v.Type == scanner.String && validateBuiltInScalar(v.Text, "String")) {
+				return true, ""
+			}
+			return false, fmt.Sprintf("ID cannot represent a non-string and non-integer value: %s", v)
 		default:
 			// TODO: Type-check against expected type by Unmarshalling
-			return true
+			return true, ""
 		}
 
 	case *ast.EnumTypeDefinition:
-		if v.Type != scanner.Ident {
-			return false
-		}
+		values := make([]string, 0, len(t.EnumValuesDefinition))
 		for _, option := range t.EnumValuesDefinition {
-			if option.EnumValue == v.Text {
-				return true
-			}
+			values = append(values, option.EnumValue)
 		}
-		return false
-	}
 
-	return false
+		if v.Type == scanner.Ident {
+			if v.Text == "true" || v.Text == "false" {
+				return false, fmt.Sprintf("Enum %q cannot represent non-enum value: %s.", t.Name, v)
+			}
+
+			for _, option := range t.EnumValuesDefinition {
+				if option.EnumValue == v.Text {
+					return true, ""
+				}
+			}
+
+			suggestion := makeSuggestion("Did you mean the enum value", values, v.Text)
+			if suggestion == "" {
+				for _, option := range values {
+					if strings.EqualFold(option, v.Text) {
+						suggestion = fmt.Sprintf(" Did you mean the enum value %q?", option)
+						break
+					}
+				}
+			}
+			if suggestion != "" {
+				return false, fmt.Sprintf("Value %q does not exist in %q enum.%s", v.Text, t.Name, suggestion)
+			}
+			return false, fmt.Sprintf("Value %q does not exist in %q enum.", v.Text, t.Name)
+		}
+
+		candidate := strings.Trim(v.Text, "\"")
+		suggestion := makeSuggestion("Did you mean the enum value", values, candidate)
+		if suggestion != "" {
+			return false, fmt.Sprintf("Enum %q cannot represent non-enum value: %s.%s", t.Name, v, suggestion)
+		}
+		return false, fmt.Sprintf("Enum %q cannot represent non-enum value: %s.", t.Name, v)
+
+	default:
+		return false, fmt.Sprintf("Expected type %q, found %s.", t, v)
+	}
 }
 
 func validateBuiltInScalar(v string, n string) bool {

@@ -237,9 +237,8 @@ type structPackerField struct {
 
 func (p *StructPacker) Pack(value any) (reflect.Value, error) {
 	if value == nil {
-		return reflect.Value{}, errors.Errorf("got null for non-null")
+		return reflect.Value{}, fmt.Errorf("got null for input object")
 	}
-
 	values := value.(map[string]any)
 	v := reflect.New(p.structType)
 	v.Elem().Set(p.defaultStruct)
@@ -350,12 +349,16 @@ func UnmarshalInput(typ reflect.Type, input any) (any, error) {
 				return nil, fmt.Errorf("not a 32-bit integer")
 			}
 			return int32(input), nil
-		case float64:
-			coerced := int32(input)
-			if input < math.MinInt32 || input > math.MaxInt32 || float64(coerced) != input {
+		case int64:
+			if input < math.MinInt32 || input > math.MaxInt32 {
 				return nil, fmt.Errorf("not a 32-bit integer")
 			}
-			return coerced, nil
+			return int32(input), nil
+		case float64:
+			if input < math.MinInt32 || input > math.MaxInt32 || math.Trunc(input) != input {
+				return nil, fmt.Errorf("not a 32-bit integer")
+			}
+			return int32(input), nil
 		}
 
 	case reflect.Float64:
@@ -363,6 +366,8 @@ func UnmarshalInput(typ reflect.Type, input any) (any, error) {
 		case int32:
 			return float64(input), nil
 		case int:
+			return float64(input), nil
+		case int64:
 			return float64(input), nil
 		}
 

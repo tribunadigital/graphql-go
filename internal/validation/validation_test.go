@@ -30,19 +30,23 @@ type Test struct {
 
 func TestValidate(t *testing.T) {
 	skip := map[string]struct{}{
-		// Minor issue: reporting extra error under PossibleFragmentSpreadsRule which is not intended
+		// known-rule-overlap: extra error under PossibleFragmentSpreadsRule.
 		"Validate: Possible fragment spreads/ignores incorrect type (caught by FragmentsOnCompositeTypesRule)": {},
-		// graphql-js test case parses SDL as if it was a query here, which fails since we only accept a query
+		// parser-mismatch: graphql-js fixture parses SDL as executable query.
 		"Validate: Directives Are Unique Per Location/unknown directives must be ignored": {},
-		// The meta schema always includes the standard types, so this isn't applicable
+		"Validate: Executable definitions/with schema definition":                         {},
+		"Validate: Executable definitions/with type definition":                           {},
+		// schema-difference: meta schema always includes standard scalar types.
 		"Validate: Known type names/references to standard scalars that are missing in schema": {},
-		// Ignore tests using experimental @stream
+		// unsupported-feature: experimental @stream directives.
 		"Validate: Overlapping fields can be merged/different stream directive label":               {},
 		"Validate: Overlapping fields can be merged/different stream directive initialCount":        {},
 		"Validate: Overlapping fields can be merged/different stream directive first missing args":  {},
 		"Validate: Overlapping fields can be merged/different stream directive second missing args": {},
 		"Validate: Overlapping fields can be merged/different stream directive extra argument":      {},
 		"Validate: Overlapping fields can be merged/mix of stream and no stream":                    {},
+		// unresolved-scalar-parse-literal: graphql-js can reject literal via scalar parseLiteral(undefined) behavior.
+		"Validate: Values of correct type/Invalid input object value/reports error for custom scalar that returns undefined": {},
 	}
 
 	f, err := os.Open("testdata/tests.json")
@@ -61,16 +65,6 @@ func TestValidate(t *testing.T) {
 	schemas := make(map[string]*ast.Schema, len(testData.Schemas))
 	for _, sc := range testData.Schemas {
 		s := schema.New()
-
-		s.Directives["oneOf"] = &ast.DirectiveDefinition{
-			// graphql-js includes support for @oneOf, currently in RFC
-			// This is not available in graphql-go, nor is it expected to be unless the RFC is accepted
-			// See https://github.com/graphql/graphql-js/pull/3513 & https://github.com/graphql/graphql-spec/pull/825/
-			Name:      "oneOf",
-			Desc:      "Indicates exactly one field must be supplied and this field must not be `null`.",
-			Locations: []string{"INPUT_OBJECT"},
-		}
-
 		err := schema.Parse(s, sc.SDL, false)
 		if err != nil {
 			t.Fatal(err)
@@ -88,7 +82,7 @@ func TestValidate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to parse query: %s", err)
 			}
-			errs := validation.Validate(schemas[test.Schema], d, test.Vars, 0, 0)
+			errs := validation.Validate(schemas[test.Schema], d, test.Vars, 0, 0, test.Rule == "NoDeprecatedCustomRule")
 			got := []*errors.QueryError{}
 			for _, err := range errs {
 				if err.Rule == test.Rule {
@@ -96,8 +90,8 @@ func TestValidate(t *testing.T) {
 					got = append(got, err)
 				}
 			}
-			sortLocations(test.Errors)
-			sortLocations(got)
+			normalizeErrors(test.Errors)
+			normalizeErrors(got)
 			if !reflect.DeepEqual(test.Errors, got) {
 				t.Errorf("wrong errors for rule %q\nexpected: %v\ngot:      %v", test.Rule, test.Errors, got)
 			}
@@ -105,9 +99,30 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func sortLocations(errs []*errors.QueryError) {
+func normalizeErrors(errs []*errors.QueryError) {
 	for _, err := range errs {
 		locs := err.Locations
 		sort.Slice(locs, func(i, j int) bool { return locs[i].Before(locs[j]) })
 	}
+
+	sort.Slice(errs, func(i, j int) bool {
+		if errs[i].Message != errs[j].Message {
+			return errs[i].Message < errs[j].Message
+		}
+
+		il := errs[i].Locations
+		jl := errs[j].Locations
+		if len(il) == 0 || len(jl) == 0 {
+			return len(il) < len(jl)
+		}
+
+		if il[0].Line != jl[0].Line {
+			return il[0].Line < jl[0].Line
+		}
+		if il[0].Column != jl[0].Column {
+			return il[0].Column < jl[0].Column
+		}
+
+		return len(il) < len(jl)
+	})
 }

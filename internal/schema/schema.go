@@ -76,6 +76,32 @@ func Parse(s *ast.Schema, schemaString string, useStringDescriptions bool) error
 		s.RootOperationTypes[key] = t
 	}
 
+	// Validate that @oneOf directive is only used on INPUT_OBJECT types
+	for _, typeDef := range s.Types {
+		switch t := typeDef.(type) {
+		case *ast.ObjectTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.InterfaceTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.Union:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.EnumTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.ScalarTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		}
+	}
+
 	// Interface types need validation: https://spec.graphql.org/draft/#sec-Interfaces.Interfaces-Implementing-Interfaces
 	for _, typeDef := range s.Types {
 		switch t := typeDef.(type) {
@@ -85,18 +111,26 @@ func Parse(s *ast.Schema, schemaString string, useStringDescriptions bool) error
 				if !ok {
 					return errors.Errorf("interface %q not found", implements)
 				}
-				inteface, ok := typ.(*ast.InterfaceTypeDefinition)
+				intf, ok := typ.(*ast.InterfaceTypeDefinition)
 				if !ok {
-					return errors.Errorf("type %q is not an interface", inteface)
+					return errors.Errorf("type %q is not an interface", implements.Name)
 				}
 
-				for _, f := range inteface.Fields.Names() {
-					if t.Fields.Get(f) == nil {
-						return errors.Errorf("interface %q expects field %q but %q does not provide it", inteface.Name, f, t.Name)
+				for _, f := range intf.Fields.Names() {
+					implField := t.Fields.Get(f)
+					if implField == nil {
+						return errors.Errorf("interface %q expects field %q but %q does not provide it", intf.Name, f, t.Name)
+					}
+					intfField := intf.Fields.Get(f)
+					if err := validateImplementingFieldArguments(intf.Name, t.Name, "interface", intfField, implField); err != nil {
+						return err
+					}
+					if intfField.Directives.Get("deprecated") == nil && implField.Directives.Get("deprecated") != nil {
+						return errors.Errorf("interface %q field %q is not deprecated but implementing interface %q marks it as deprecated", intf.Name, f, t.Name)
 					}
 				}
 
-				t.Interfaces[i] = inteface
+				t.Interfaces[i] = intf
 			}
 		default:
 			continue
@@ -123,8 +157,16 @@ func Parse(s *ast.Schema, schemaString string, useStringDescriptions bool) error
 				return errors.Errorf("type %q is not an interface", intfName)
 			}
 			for _, f := range intf.Fields.Names() {
-				if obj.Fields.Get(f) == nil {
+				implField := obj.Fields.Get(f)
+				if implField == nil {
 					return errors.Errorf("interface %q expects field %q but %q does not provide it", intfName, f, obj.Name)
+				}
+				intfField := intf.Fields.Get(f)
+				if err := validateImplementingFieldArguments(intfName, obj.Name, "type", intfField, implField); err != nil {
+					return err
+				}
+				if intfField.Directives.Get("deprecated") == nil && implField.Directives.Get("deprecated") != nil {
+					return errors.Errorf("interface %q field %q is not deprecated but implementing type %q marks it as deprecated", intfName, f, obj.Name)
 				}
 			}
 			obj.Interfaces[i] = intf
@@ -161,6 +203,47 @@ func Parse(s *ast.Schema, schemaString string, useStringDescriptions bool) error
 		}
 	}
 
+	// Validate @oneOf input types and resolve directives on input objects
+	for _, typeDef := range s.Types {
+		input, ok := typeDef.(*ast.InputObject)
+		if !ok {
+			continue
+		}
+
+		if input.Directives.Get("oneOf") != nil {
+			// @oneOf is only valid on INPUT_OBJECT types - check is implicit since we're checking InputObject type
+
+			// Validate that input type has at least one field
+			if len(input.Values) == 0 {
+				return errors.Errorf("OneOf Input Object %q must define at least one field", input.Name)
+			}
+
+			// Validate that all fields are nullable (not NonNull)
+			for _, field := range input.Values {
+				if _, ok := field.Type.(*ast.NonNull); ok {
+					return errors.Errorf("OneOf input field %s.%s must be nullable.", input.Name, field.Name.Name)
+				}
+			}
+
+			// Validate that no fields have default values
+			for _, field := range input.Values {
+				if field.Default != nil {
+					return errors.Errorf("OneOf input field %s.%s cannot have a default value.", input.Name, field.Name.Name)
+				}
+			}
+		}
+
+		// Resolve directives on input and input fields
+		if err := resolveDirectives(s, input.Directives, "INPUT_OBJECT"); err != nil {
+			return err
+		}
+		for _, field := range input.Values {
+			if err := resolveDirectives(s, field.Directives, "INPUT_FIELD_DEFINITION"); err != nil {
+				return err
+			}
+		}
+	}
+
 	s.SchemaString = schemaString
 
 	return nil
@@ -170,6 +253,47 @@ func ParseSchema(schemaString string, useStringDescriptions bool) (*ast.Schema, 
 	s := New()
 	err := Parse(s, schemaString, useStringDescriptions)
 	return s, err
+}
+
+func validateImplementingFieldArguments(interfaceName, implementerName, implementerKind string, intfField, implField *ast.FieldDefinition) error {
+	for _, intfArg := range intfField.Arguments {
+		implArg := implField.Arguments.Get(intfArg.Name.Name)
+		if implArg == nil {
+			return errors.Errorf("interface %q field %q expects argument %q but implementing %s %q does not provide it", interfaceName, intfField.Name, intfArg.Name.Name, implementerKind, implementerName)
+		}
+		if !typesEqual(intfArg.Type, implArg.Type) {
+			return errors.Errorf("interface %q field %q argument %q has type %q but implementing %s %q defines type %q", interfaceName, intfField.Name, intfArg.Name.Name, intfArg.Type, implementerKind, implementerName, implArg.Type)
+		}
+	}
+
+	for _, implArg := range implField.Arguments {
+		if intfField.Arguments.Get(implArg.Name.Name) != nil {
+			continue
+		}
+		if isRequiredArgument(implArg) {
+			return errors.Errorf("interface %q field %q defines additional argument %q on implementing %s %q, but additional arguments must not be required", interfaceName, intfField.Name, implArg.Name.Name, implementerKind, implementerName)
+		}
+	}
+
+	return nil
+}
+
+func isRequiredArgument(arg *ast.InputValueDefinition) bool {
+	_, isNonNull := arg.Type.(*ast.NonNull)
+	return isNonNull && arg.Default == nil
+}
+
+func typesEqual(a, b ast.Type) bool {
+	switch at := a.(type) {
+	case *ast.List:
+		bt, ok := b.(*ast.List)
+		return ok && typesEqual(at.OfType, bt.OfType)
+	case *ast.NonNull:
+		bt, ok := b.(*ast.NonNull)
+		return ok && typesEqual(at.OfType, bt.OfType)
+	default:
+		return a == b
+	}
 }
 
 func mergeExtensions(s *ast.Schema) error {

@@ -30,13 +30,17 @@ func (s *Schema) Subscribe(ctx context.Context, queryString string, operationNam
 }
 
 func (s *Schema) subscribe(ctx context.Context, queryString string, operationName string, variables map[string]any, res *resolvable.Schema) <-chan any {
+	if s.maxQueryLength > 0 && len(queryString) > s.maxQueryLength {
+		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qerrors.Errorf("query length %d exceeds the maximum allowed query length of %d bytes", len(queryString), s.maxQueryLength)}})
+	}
+
 	doc, qErr := query.Parse(queryString)
 	if qErr != nil {
 		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qErr}})
 	}
 
 	validationFinish := s.validationTracer.TraceValidation(ctx)
-	errs := validation.Validate(s.schema, doc, variables, s.maxDepth, s.overlapPairLimit)
+	errs := validation.Validate(s.schema, doc, variables, s.maxDepth, s.overlapPairLimit, s.validateDeprecated)
 	validationFinish(errs)
 	if len(errs) != 0 {
 		return sendAndReturnClosed(&Response{Errors: errs})

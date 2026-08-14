@@ -55,14 +55,17 @@ var metaSrc = `
 		# Explains why this element was deprecated, usually also including a suggestion
 		# for how to access supported similar data. Formatted in
 		# [Markdown](https://daringfireball.net/projects/markdown/).
-		reason: String = "No longer supported"
-	) on FIELD_DEFINITION | ENUM_VALUE | ARGUMENT_DEFINITION
+		reason: String! = "No longer supported"
+	) on FIELD_DEFINITION | ENUM_VALUE | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION
 
 	# Provides a scalar specification URL for specifying the behavior of custom scalar types.
 	directive @specifiedBy(
 		# The URL should point to a human-readable specification of the data format, serialization, and coercion rules.
 		url: String!
 	) on SCALAR
+
+	# Marks an input object type as requiring exactly one of its fields to be provided.
+	directive @oneOf on INPUT_OBJECT
 
 	# A Directive provides a way to describe alternate runtime execution and type validation behavior in a GraphQL document.
 	#
@@ -74,7 +77,7 @@ var metaSrc = `
 		name: String!
 		description: String
 		locations: [__DirectiveLocation!]!
-		args: [__InputValue!]!
+		args(includeDeprecated: Boolean! = false): [__InputValue!]!
 	}
 
 	# A Directive can be adjacent to many parts of the GraphQL language, a
@@ -133,7 +136,7 @@ var metaSrc = `
 	type __Field {
 		name: String!
 		description: String
-		args: [__InputValue!]!
+		args(includeDeprecated: Boolean! = false): [__InputValue!]!
 		type: __Type!
 		isDeprecated: Boolean!
 		deprecationReason: String
@@ -180,11 +183,11 @@ var metaSrc = `
 		kind: __TypeKind!
 		name: String
 		description: String
-		fields(includeDeprecated: Boolean = false): [__Field!]
+		fields(includeDeprecated: Boolean! = false): [__Field!]
 		interfaces: [__Type!]
 		possibleTypes: [__Type!]
-		enumValues(includeDeprecated: Boolean = false): [__EnumValue!]
-		inputFields: [__InputValue!]
+		enumValues(includeDeprecated: Boolean! = false): [__EnumValue!]
+		inputFields(includeDeprecated: Boolean! = false): [__InputValue!]
 		ofType: __Type
 		specifiedByURL: String
 	}

@@ -2,7 +2,17 @@ package errors
 
 import (
 	"fmt"
+	"strings"
 )
+
+type constErr string
+
+func (e constErr) Error() string {
+	return string(e)
+}
+
+// ErrSyntax marks GraphQL syntax parsing failures.
+const ErrSyntax constErr = "graphql syntax error"
 
 type QueryError struct {
 	Err           error          `json:"-"` // Err holds underlying if available
@@ -50,11 +60,12 @@ func (err *QueryError) Error() string {
 	if err == nil {
 		return "<nil>"
 	}
-	str := fmt.Sprintf("graphql: %s", err.Message)
+	var str strings.Builder
+	fmt.Fprintf(&str, "graphql: %s", err.Message)
 	for _, loc := range err.Locations {
-		str += fmt.Sprintf(" (line %d, column %d)", loc.Line, loc.Column)
+		fmt.Fprintf(&str, " (line %d, column %d)", loc.Line, loc.Column)
 	}
-	return str
+	return str.String()
 }
 
 func (err *QueryError) Unwrap() error {
