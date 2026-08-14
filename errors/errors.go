@@ -5,14 +5,14 @@ import (
 )
 
 type QueryError struct {
-	Err           error                  `json:"-"` // Err holds underlying if available
-	FieldCtxErr   bool                   `json:"-"`
-	Message       string                 `json:"message"`
-	Locations     []Location             `json:"locations,omitempty"`
-	Path          []interface{}          `json:"path,omitempty"`
-	Rule          string                 `json:"-"`
-	ResolverError error                  `json:"-"`
-	Extensions    map[string]interface{} `json:"extensions,omitempty"`
+	Err           error          `json:"-"` // Err holds underlying if available
+	FieldCtxErr   bool           `json:"-"`
+	Message       string         `json:"message"`
+	Locations     []Location     `json:"locations,omitempty"`
+	Path          []any          `json:"path,omitempty"`
+	Rule          string         `json:"-"`
+	ResolverError error          `json:"-"`
+	Extensions    map[string]any `json:"extensions,omitempty"`
 }
 
 type Location struct {
@@ -25,13 +25,13 @@ func (a Location) Before(b Location) bool {
 }
 
 // ErrorfSkip is a wrapper for Errorf to set FieldCtxErr to true.
-func ErrorfSkip(format string, a ...interface{}) *QueryError {
+func ErrorfSkip(format string, a ...any) *QueryError {
 	err := Errorf(format, a...)
 	err.FieldCtxErr = true
 	return err
 }
 
-func Errorf(format string, a ...interface{}) *QueryError {
+func Errorf(format string, a ...any) *QueryError {
 	// similar to fmt.Errorf, Errorf will wrap the last argument if it is an instance of error
 	var err error
 	if n := len(a); n > 0 {

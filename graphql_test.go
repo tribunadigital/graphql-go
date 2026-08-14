@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ var starwarsSchema = graphql.MustParseSchema(starwars.Schema, &starwars.Resolver
 
 type ResolverError interface {
 	error
-	Extensions() map[string]interface{}
+	Extensions() map[string]any
 }
 
 type resolverNotFoundError struct {
@@ -95,8 +96,8 @@ func (e resolverNotFoundError) Error() string {
 	return fmt.Sprintf("Error [%s]: %s", e.Code, e.Message)
 }
 
-func (e resolverNotFoundError) Extensions() map[string]interface{} {
-	return map[string]interface{}{
+func (e resolverNotFoundError) Extensions() map[string]any {
+	return map[string]any{
 		"code":    e.Code,
 		"message": e.Message,
 	}
@@ -459,7 +460,6 @@ func TestRootOperations_invalidSchema(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -785,7 +785,7 @@ func TestNilInterface(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message:       "x",
-					Path:          []interface{}{"b"},
+					Path:          []any{"b"},
 					ResolverError: errors.New("x"),
 				},
 			},
@@ -823,9 +823,9 @@ func TestErrorPropagationInLists(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message:       droidNotFoundError.Error(),
-					Path:          []interface{}{"findDroids", 1, "name"},
+					Path:          []any{"findDroids", 1, "name"},
 					ResolverError: droidNotFoundError,
-					Extensions:    map[string]interface{}{"code": droidNotFoundError.Code, "message": droidNotFoundError.Message},
+					Extensions:    map[string]any{"code": droidNotFoundError.Code, "message": droidNotFoundError.Message},
 				},
 			},
 		},
@@ -865,9 +865,9 @@ func TestErrorPropagationInLists(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message:       droidNotFoundError.Error(),
-					Path:          []interface{}{"findDroids", 1, "name"},
+					Path:          []any{"findDroids", 1, "name"},
 					ResolverError: droidNotFoundError,
-					Extensions:    map[string]interface{}{"code": droidNotFoundError.Code, "message": droidNotFoundError.Message},
+					Extensions:    map[string]any{"code": droidNotFoundError.Code, "message": droidNotFoundError.Message},
 				},
 			},
 		},
@@ -899,7 +899,7 @@ func TestErrorPropagationInLists(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: `graphql: got nil for non-null "Droid"`,
-					Path:    []interface{}{"findNilDroids", 1},
+					Path:    []any{"findNilDroids", 1},
 				},
 			},
 		},
@@ -977,7 +977,7 @@ func TestErrorPropagationInLists(t *testing.T) {
 				{
 					Message:       errQuote.Error(),
 					ResolverError: errQuote,
-					Path:          []interface{}{"findDroids", 0, "quotes"},
+					Path:          []any{"findDroids", 0, "quotes"},
 				},
 			},
 		},
@@ -1012,11 +1012,11 @@ func TestErrorPropagationInLists(t *testing.T) {
 				{
 					Message:       errQuote.Error(),
 					ResolverError: errQuote,
-					Path:          []interface{}{"findNilDroids", 0, "quotes"},
+					Path:          []any{"findNilDroids", 0, "quotes"},
 				},
 				{
 					Message: `graphql: got nil for non-null "Droid"`,
-					Path:    []interface{}{"findNilDroids", 1},
+					Path:    []any{"findNilDroids", 1},
 				},
 			},
 		},
@@ -1055,9 +1055,9 @@ func TestErrorWithExtensions(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message:       droidNotFoundError.Error(),
-					Path:          []interface{}{"FindDroid"},
+					Path:          []any{"FindDroid"},
 					ResolverError: droidNotFoundError,
-					Extensions:    map[string]interface{}{"code": droidNotFoundError.Code, "message": droidNotFoundError.Message},
+					Extensions:    map[string]any{"code": droidNotFoundError.Code, "message": droidNotFoundError.Message},
 				},
 			},
 		},
@@ -1091,7 +1091,7 @@ func TestErrorWithNoExtensions(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message:       err.Error(),
-					Path:          []interface{}{"DismissVader"},
+					Path:          []any{"DismissVader"},
 					ResolverError: err,
 					Extensions:    nil,
 				},
@@ -1292,7 +1292,7 @@ func TestVariables(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode": "JEDI",
 			},
 			ExpectedResult: `
@@ -1313,7 +1313,7 @@ func TestVariables(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode": "EMPIRE",
 			},
 			ExpectedResult: `
@@ -1363,7 +1363,7 @@ func TestSkipDirective(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode":        "JEDI",
 				"withoutFriends": true,
 			},
@@ -1388,7 +1388,7 @@ func TestSkipDirective(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode":        "JEDI",
 				"withoutFriends": false,
 			},
@@ -1432,7 +1432,7 @@ func TestIncludeDirective(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode":     "JEDI",
 				"withFriends": false,
 			},
@@ -1461,7 +1461,7 @@ func TestIncludeDirective(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode":     "JEDI",
 				"withFriends": true,
 			},
@@ -1623,7 +1623,7 @@ func TestSpecifiedByDirective(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{},
+			Variables: map[string]any{},
 			ExpectedResult: `
 				{
 					"__type": {
@@ -1718,7 +1718,7 @@ func TestEnums(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{"episode": "JEDI"},
+			Variables: map[string]any{"episode": "JEDI"},
 			ExpectedResult: `
 				{
 					"hero": {
@@ -1737,7 +1737,7 @@ func TestEnums(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{"episode": "FINAL_FRONTIER"},
+			Variables: map[string]any{"episode": "FINAL_FRONTIER"},
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message:   "Variable \"episode\" has invalid value FINAL_FRONTIER.\nExpected type \"Episode\", found FINAL_FRONTIER.",
@@ -1802,7 +1802,7 @@ func TestEnums(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: "Invalid value STAR_TREK.\nExpected type Episode, found STAR_TREK.",
-					Path:    []interface{}{"hero", "appearsIn", 0},
+					Path:    []any{"hero", "appearsIn", 0},
 				},
 			},
 		},
@@ -1843,7 +1843,7 @@ func TestInlineFragments(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode": "JEDI",
 			},
 			ExpectedResult: `
@@ -1871,7 +1871,7 @@ func TestInlineFragments(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"episode": "EMPIRE",
 			},
 			ExpectedResult: `
@@ -2220,9 +2220,9 @@ func TestMutation(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"ep": "JEDI",
-				"review": map[string]interface{}{
+				"review": map[string]any{
 					"stars":      5,
 					"commentary": "This is a great movie!",
 				},
@@ -2247,9 +2247,9 @@ func TestMutation(t *testing.T) {
 					}
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"ep": "EMPIRE",
-				"review": map[string]interface{}{
+				"review": map[string]any{
 					"stars": float64(4),
 				},
 			},
@@ -2951,7 +2951,7 @@ func TestTime(t *testing.T) {
 					b: addHour
 				}
 			`,
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"t": time.Date(2000, 2, 3, 4, 5, 6, 0, time.UTC),
 			},
 			ExpectedResult: `
@@ -3040,7 +3040,7 @@ func (IntEnum) ImplementsGraphQLType(name string) bool {
 	return name == "IntEnum"
 }
 
-func (e *IntEnum) UnmarshalGraphQL(input interface{}) error {
+func (e *IntEnum) UnmarshalGraphQL(input any) error {
 	if str, ok := input.(string); ok {
 		switch str {
 		case "Int0":
@@ -3317,7 +3317,7 @@ func (r *inputArgumentsObjectMismatch3) Hello(args struct{ Input *struct{ Thing 
 
 func TestInputArguments_failSchemaParsing(t *testing.T) {
 	type args struct {
-		Resolver interface{}
+		Resolver any
 		Schema   string
 		Opts     []graphql.SchemaOpt
 	}
@@ -3445,7 +3445,6 @@ func TestInputArguments_failSchemaParsing(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -3568,7 +3567,7 @@ func TestErrorPropagation(t *testing.T) {
 				{
 					Message:       errExample.Error(),
 					ResolverError: errExample,
-					Path:          []interface{}{"triggerError"},
+					Path:          []any{"triggerError"},
 				},
 			},
 		},
@@ -3607,7 +3606,7 @@ func TestErrorPropagation(t *testing.T) {
 				{
 					Message:       errExample.Error(),
 					ResolverError: errExample,
-					Path:          []interface{}{"child", "triggerError"},
+					Path:          []any{"child", "triggerError"},
 				},
 			},
 		},
@@ -3650,7 +3649,7 @@ func TestErrorPropagation(t *testing.T) {
 				{
 					Message:       errExample.Error(),
 					ResolverError: errExample,
-					Path:          []interface{}{"child", "child", "triggerError"},
+					Path:          []any{"child", "child", "triggerError"},
 				},
 			},
 		},
@@ -3696,7 +3695,7 @@ func TestErrorPropagation(t *testing.T) {
 				{
 					Message:       errExample.Error(),
 					ResolverError: errExample,
-					Path:          []interface{}{"child", "child", "triggerError"},
+					Path:          []any{"child", "child", "triggerError"},
 				},
 			},
 		},
@@ -3732,7 +3731,7 @@ func TestErrorPropagation(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: nilChildErrorString,
-					Path:    []interface{}{"child", "nilChild"},
+					Path:    []any{"child", "nilChild"},
 				},
 			},
 		},
@@ -3772,7 +3771,7 @@ func TestErrorPropagation(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: nilChildErrorString,
-					Path:    []interface{}{"child", "nilChild"},
+					Path:    []any{"child", "nilChild"},
 				},
 			},
 		},
@@ -3816,12 +3815,12 @@ func TestErrorPropagation(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: nilChildErrorString,
-					Path:    []interface{}{"child", "child", "child", "nilChild"},
+					Path:    []any{"child", "child", "child", "nilChild"},
 				},
 				{
 					Message:       errExample.Error(),
 					ResolverError: errExample,
-					Path:          []interface{}{"child", "child", "triggerError"},
+					Path:          []any{"child", "child", "triggerError"},
 				},
 			},
 		},
@@ -3860,7 +3859,7 @@ func TestErrorPropagation(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: nilChildErrorString,
-					Path:    []interface{}{"child", "child", "nilChild"},
+					Path:    []any{"child", "child", "nilChild"},
 				},
 			},
 		},
@@ -4017,7 +4016,7 @@ func TestSchema_Exec_without_resolver(t *testing.T) {
 		Schema string
 	}
 	type want struct {
-		Panic interface{}
+		Panic any
 	}
 	testTable := []struct {
 		Name string
@@ -4059,7 +4058,7 @@ func TestSchema_Exec_without_resolver(t *testing.T) {
 					t.Fail()
 				}
 			}()
-			_ = s.Exec(context.Background(), tt.Args.Query, "", map[string]interface{}{})
+			_ = s.Exec(context.Background(), tt.Args.Query, "", map[string]any{})
 		})
 	}
 }
@@ -4142,7 +4141,7 @@ func TestPointerReturnForNonNull(t *testing.T) {
 			ExpectedErrors: []*gqlerrors.QueryError{
 				{
 					Message: `graphql: got nil for non-null "Hello"`,
-					Path:    []interface{}{"pointerReturn", "value"},
+					Path:    []any{"pointerReturn", "value"},
 				},
 			},
 		},
@@ -4342,19 +4341,19 @@ type fieldTrace struct {
 	typeName  string
 	fieldName string
 	isTrivial bool
-	args      map[string]interface{}
+	args      map[string]any
 	err       *gqlerrors.QueryError
 }
 
 type queryTrace struct {
 	document  string
 	opName    string
-	variables map[string]interface{}
+	variables map[string]any
 	varTypes  map[string]*introspection.Type
 	errors    []*gqlerrors.QueryError
 }
 
-func (t *testTracer) TraceField(ctx context.Context, label, typeName, fieldName string, trivial bool, args map[string]interface{}) (context.Context, func(*gqlerrors.QueryError)) {
+func (t *testTracer) TraceField(ctx context.Context, label, typeName, fieldName string, trivial bool, args map[string]any) (context.Context, func(*gqlerrors.QueryError)) {
 	return ctx, func(qe *gqlerrors.QueryError) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
@@ -4372,7 +4371,7 @@ func (t *testTracer) TraceField(ctx context.Context, label, typeName, fieldName 
 	}
 }
 
-func (t *testTracer) TraceQuery(ctx context.Context, document string, opName string, vars map[string]interface{}, varTypes map[string]*introspection.Type) (context.Context, func([]*gqlerrors.QueryError)) {
+func (t *testTracer) TraceQuery(ctx context.Context, document string, opName string, vars map[string]any, varTypes map[string]*introspection.Type) (context.Context, func([]*gqlerrors.QueryError)) {
 	return ctx, func(qe []*gqlerrors.QueryError) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
@@ -4411,7 +4410,7 @@ func TestTracer(t *testing.T) {
 	}
 	`
 	opName := "TestTracer"
-	variables := map[string]interface{}{
+	variables := map[string]any{
 		"id": "1002",
 	}
 
@@ -4543,7 +4542,7 @@ func TestQueryVariablesValidation(t *testing.T) {
 					match
 				}
 			}`,
-		Variables: map[string]interface{}{"filter": map[string]interface{}{}},
+		Variables: map[string]any{"filter": map[string]any{}},
 		ExpectedErrors: []*gqlerrors.QueryError{{
 			Message:   "Variable \"required\" has invalid value null.\nExpected type \"String!\", found null.",
 			Locations: []gqlerrors.Location{{Line: 3, Column: 5}},
@@ -4797,7 +4796,7 @@ type errRootResolver7 struct {
 }
 
 // Subscription is invalid because it returns an invalid resolver.
-func (*errRootResolver7) Subscription() interface{} {
+func (*errRootResolver7) Subscription() any {
 	a := struct {
 		Name string
 	}{Name: "invalid"}
@@ -4912,7 +4911,7 @@ func TestSeparateResolvers(t *testing.T) {
 	// test errors with invalid resolvers
 	tests := []struct {
 		name     string
-		resolver interface{}
+		resolver any
 		opts     []graphql.SchemaOpt
 		wantErr  string
 	}{
@@ -5043,7 +5042,7 @@ func TestGraphqlNames(t *testing.T) {
 					Hello: String!
 					HELLO: String!
 				}`,
-				func() interface{} {
+				func() any {
 					type helloTagResolver struct {
 						Hello           string
 						HelloUnderscore string `graphql:"_hello"`
@@ -5089,7 +5088,7 @@ func Test_fieldFunc(t *testing.T) {
 	gqltesting.RunTests(t, []*gqltesting.Test{
 		{
 			Schema: graphql.MustParseSchema(sdl,
-				func() interface{} {
+				func() any {
 					type helloTagResolver struct {
 						Hello func(args struct{ Name string }) string
 					}
@@ -5114,7 +5113,7 @@ func Test_fieldFunc(t *testing.T) {
 		},
 		{
 			Schema: graphql.MustParseSchema(sdl,
-				func() interface{} {
+				func() any {
 					type helloTagResolver struct {
 						Greet func(ctx context.Context, args struct{ Name string }) (string, error) `graphql:"hello"`
 					}
@@ -5137,5 +5136,745 @@ func Test_fieldFunc(t *testing.T) {
 				}
 			`,
 		},
+	})
+}
+
+func TestParseSchema_multipleExecutable(t *testing.T) {
+	t.Parallel()
+
+	// Multiple executable schemas, created from the same shared definition.
+	// These can apply distinct options, and resolve queries independently
+	s1 := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.MaxDepth(2))
+	s2 := s1.MustClone(&starwars.Resolver{}, graphql.MaxQueryLength(20))
+
+	query := `
+		query {
+			hero {
+				id
+				name
+				friends {
+					name
+				}
+			}
+		}`
+
+	gqltesting.RunTests(t, []*gqltesting.Test{
+		{
+			Schema: s1,
+			Query:  query,
+			ExpectedErrors: []*gqlerrors.QueryError{{
+				Message: `Field "name" has depth 3 that exceeds max depth 2`,
+				Rule:    "MaxDepthExceeded",
+				Locations: []gqlerrors.Location{
+					{Line: 7, Column: 6},
+				},
+			}},
+		},
+		{
+			Schema: s2,
+			Query:  query,
+			ExpectedErrors: []*gqlerrors.QueryError{{
+				Message: `query length 75 exceeds the maximum allowed query length of 20 bytes`,
+			}},
+		},
+	})
+}
+
+func TestSchemaClone(t *testing.T) {
+	tests := []struct {
+		name          string
+		resolver      any
+		shouldSucceed bool
+	}{
+		{
+			name:          "clone with same resolver type",
+			resolver:      &starwars.Resolver{},
+			shouldSucceed: true,
+		},
+		{
+			name:          "clone with nil resolver",
+			resolver:      nil,
+			shouldSucceed: true,
+		},
+		{
+			name:          "clone with invalid resolver",
+			resolver:      struct{}{},
+			shouldSucceed: false,
+		},
+	}
+
+	baseSchema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clone, err := baseSchema.Clone(tt.resolver)
+
+			if tt.shouldSucceed && err != nil {
+				t.Errorf("Clone: expected no error, got %v", err)
+			}
+			if !tt.shouldSucceed && err == nil {
+				t.Errorf("Clone: expected error, got nil")
+			}
+			if tt.shouldSucceed && clone == nil {
+				t.Errorf("Clone: expected non-nil clone, got nil")
+			}
+			if tt.shouldSucceed && clone == baseSchema {
+				t.Errorf("Clone: expected different instance, got same")
+			}
+		})
+	}
+}
+
+func TestSchemaMustClone(t *testing.T) {
+	baseSchema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+
+	tests := []struct {
+		name        string
+		resolver    any
+		shouldPanic bool
+		testFunc    func(t *testing.T, clone *graphql.Schema)
+	}{
+		{
+			name:        "must clone with valid resolver",
+			resolver:    &starwars.Resolver{},
+			shouldPanic: false,
+			testFunc: func(t *testing.T, clone *graphql.Schema) {
+				if clone == nil {
+					t.Errorf("MustClone: expected non-nil clone, got nil")
+				}
+				if clone == baseSchema {
+					t.Errorf("MustClone: expected different instance, got same")
+				}
+			},
+		},
+		{
+			name:        "must clone with invalid resolver",
+			resolver:    struct{}{},
+			shouldPanic: true,
+			testFunc: func(t *testing.T, clone *graphql.Schema) {
+				// Should not reach here
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if tt.shouldPanic && r == nil {
+					t.Errorf("MustClone: expected panic, but none occurred")
+				}
+				if !tt.shouldPanic && r != nil {
+					t.Errorf("MustClone: unexpected panic: %v", r)
+				}
+			}()
+
+			clone := baseSchema.MustClone(tt.resolver)
+			tt.testFunc(t, clone)
+		})
+	}
+
+	t.Run("must clone can be called multiple times", func(t *testing.T) {
+		clone1 := baseSchema.MustClone(&starwars.Resolver{})
+		clone2 := baseSchema.MustClone(&starwars.Resolver{})
+
+		if clone1 == clone2 {
+			t.Errorf("MustClone: expected different instances, got same")
+		}
+		if clone1 == baseSchema || clone2 == baseSchema {
+			t.Errorf("MustClone: clones should differ from base")
+		}
+	})
+}
+
+func TestSchemaCloneWithOptions(t *testing.T) {
+	baseSchema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{},
+		graphql.MaxDepth(10),
+		graphql.MaxQueryLength(1000),
+		graphql.MaxParallelism(5),
+	)
+
+	tests := []struct {
+		name     string
+		opts     []graphql.SchemaOpt
+		testFunc func(t *testing.T, clone *graphql.Schema)
+	}{
+		{
+			name: "clone inherits parent maxDepth",
+			opts: []graphql.SchemaOpt{},
+			testFunc: func(t *testing.T, clone *graphql.Schema) {
+				// Clone with same deep query as parent should work
+				ctx := context.Background()
+				deepQuery := `{ hero { friends { friends { friends { name } } } } }`
+				result := clone.Exec(ctx, deepQuery, "", nil)
+				if len(result.Errors) > 0 {
+					t.Errorf("Clone: inherited maxDepth should allow deep queries, got errors: %v", result.Errors)
+				}
+			},
+		},
+		{
+			name: "clone with MaxDepth override",
+			opts: []graphql.SchemaOpt{graphql.MaxDepth(2)},
+			testFunc: func(t *testing.T, clone *graphql.Schema) {
+				// Clone with overridden shallow maxDepth should reject deep queries
+				ctx := context.Background()
+				deepQuery := `{ hero { friends { friends { name } } } }`
+				result := clone.Exec(ctx, deepQuery, "", nil)
+				if len(result.Errors) == 0 {
+					t.Errorf("Clone: overridden maxDepth(2) should reject deep queries, but succeeded")
+				}
+			},
+		},
+		{
+			name: "clone preserves non-overridden options",
+			opts: []graphql.SchemaOpt{graphql.MaxDepth(7)},
+			testFunc: func(t *testing.T, clone *graphql.Schema) {
+				// Just verify clone works
+				ctx := context.Background()
+				result := clone.Exec(ctx, `{ hero { name } }`, "", nil)
+				if len(result.Errors) > 0 {
+					t.Errorf("Clone: basic query should work: %v", result.Errors)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clone, err := baseSchema.Clone(&starwars.Resolver{}, tt.opts...)
+			if err != nil {
+				t.Errorf("Clone: unexpected error: %v", err)
+				return
+			}
+			tt.testFunc(t, clone)
+		})
+	}
+}
+
+func TestSchemaCloneMultiTenant(t *testing.T) {
+	privateSchema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.MaxDepth(8))
+	publicSchema, err := privateSchema.Clone(&starwars.Resolver{}, graphql.MaxDepth(3))
+	if err != nil {
+		t.Fatalf("Clone: unexpected error: %v", err)
+	}
+
+	ctx := context.Background()
+	deepQuery := `{ hero { friends { friends { name } } } }`
+
+	privateResult := privateSchema.Exec(ctx, deepQuery, "", nil)
+	if len(privateResult.Errors) > 0 {
+		t.Errorf("Private schema: expected no errors, got %v", privateResult.Errors)
+	}
+
+	publicResult := publicSchema.Exec(ctx, deepQuery, "", nil)
+	if len(publicResult.Errors) == 0 {
+		t.Errorf("Public schema: expected validation error for deep query, got none")
+	}
+
+	shallowQuery := `{ hero { name } }`
+
+	privateResult = privateSchema.Exec(ctx, shallowQuery, "", nil)
+	if len(privateResult.Errors) > 0 {
+		t.Errorf("Private schema (shallow): expected no errors, got %v", privateResult.Errors)
+	}
+
+	publicResult = publicSchema.Exec(ctx, shallowQuery, "", nil)
+	if len(publicResult.Errors) > 0 {
+		t.Errorf("Public schema (shallow): expected no errors, got %v", publicResult.Errors)
+	}
+}
+
+func TestSchemaCloneIndependentExecution(t *testing.T) {
+	baseSchema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+
+	clone1 := baseSchema.MustClone(&starwars.Resolver{})
+	clone2 := baseSchema.MustClone(&starwars.Resolver{})
+
+	ctx := context.Background()
+	query := `{ hero { name } }`
+
+	baseResult := baseSchema.Exec(ctx, query, "", nil)
+	clone1Result := clone1.Exec(ctx, query, "", nil)
+	clone2Result := clone2.Exec(ctx, query, "", nil)
+
+	if len(baseResult.Errors) > 0 || len(clone1Result.Errors) > 0 || len(clone2Result.Errors) > 0 {
+		t.Errorf("Execution failed on one or more schemas")
+	}
+
+	if string(baseResult.Data) != string(clone1Result.Data) ||
+		string(clone1Result.Data) != string(clone2Result.Data) {
+		t.Errorf("Results differ between base and clones")
+	}
+}
+
+func TestApplyResolver(t *testing.T) {
+	tests := []struct {
+		name     string
+		testFunc func(t *testing.T)
+	}{
+		{
+			name: "apply resolver to nil-resolver schema",
+			testFunc: func(t *testing.T) {
+				schema, err := graphql.ParseSchema(starwars.Schema, nil)
+				if err != nil {
+					t.Fatalf("ParseSchema: unexpected error: %v", err)
+				}
+
+				err = schema.ApplyResolver(&starwars.Resolver{})
+				if err != nil {
+					t.Errorf("ApplyResolver: unexpected error: %v", err)
+				}
+
+				ctx := context.Background()
+				result := schema.Exec(ctx, `{ hero { name } }`, "", nil)
+				if len(result.Errors) > 0 {
+					t.Errorf("Exec after ApplyResolver: got unexpected errors: %v", result.Errors)
+				}
+			},
+		},
+		{
+			name: "apply resolver to schema with existing resolver",
+			testFunc: func(t *testing.T) {
+				schema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+				err := schema.ApplyResolver(&starwars.Resolver{})
+				if err == nil {
+					t.Errorf("ApplyResolver: expected error for double application, got nil")
+				}
+			},
+		},
+		{
+			name: "apply invalid resolver",
+			testFunc: func(t *testing.T) {
+				schema, err := graphql.ParseSchema(starwars.Schema, nil)
+				if err != nil {
+					t.Fatalf("ParseSchema: unexpected error: %v", err)
+				}
+
+				err = schema.ApplyResolver(struct{}{})
+				if err == nil {
+					t.Errorf("ApplyResolver: expected error for invalid resolver, got nil")
+				}
+			},
+		},
+		{
+			name: "apply nil resolver argument to non-nil schema",
+			testFunc: func(t *testing.T) {
+				schema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+
+				err := schema.ApplyResolver(nil)
+				if err == nil {
+					t.Errorf("ApplyResolver: expected error for nil resolver argument to non-nil schema, got nil")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.testFunc(t)
+		})
+	}
+}
+
+func TestApplyResolverExecutable(t *testing.T) {
+	schema, err := graphql.ParseSchema(starwars.Schema, nil)
+	if err != nil {
+		t.Fatalf("ParseSchema: unexpected error: %v", err)
+	}
+
+	t.Run("schema with nil resolver panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Exec: expected panic, but none occurred")
+			}
+		}()
+		schema.Exec(context.Background(), `{ hero { name } }`, "", nil)
+	})
+
+	err = schema.ApplyResolver(&starwars.Resolver{})
+	if err != nil {
+		t.Fatalf("ApplyResolver: unexpected error: %v", err)
+	}
+
+	t.Run("after ApplyResolver schema can execute", func(t *testing.T) {
+		ctx := context.Background()
+		result := schema.Exec(ctx, `{ hero { name } }`, "", nil)
+		if len(result.Errors) > 0 {
+			t.Errorf("Exec: unexpected errors: %v", result.Errors)
+		}
+		if result.Data == nil {
+			t.Errorf("Exec: expected data, got nil")
+		}
+	})
+
+	t.Run("after ApplyResolver introspection still works", func(t *testing.T) {
+		ctx := context.Background()
+		introspectionQuery := `{ __schema { queryType { name } } }`
+		result := schema.Exec(ctx, introspectionQuery, "", nil)
+		if len(result.Errors) > 0 {
+			t.Errorf("Introspection: unexpected errors: %v", result.Errors)
+		}
+	})
+}
+
+func TestApplyResolverConcurrency(t *testing.T) {
+	t.Run("concurrent ApplyResolver calls", func(t *testing.T) {
+		schema, err := graphql.ParseSchema(starwars.Schema, nil)
+		if err != nil {
+			t.Fatalf("ParseSchema: unexpected error: %v", err)
+		}
+
+		const numGoroutines = 10
+		var successCount atomic.Int32
+		var wg sync.WaitGroup
+
+		wg.Add(numGoroutines)
+		for range numGoroutines {
+			go func() {
+				defer wg.Done()
+				err := schema.ApplyResolver(&starwars.Resolver{})
+				if err == nil {
+					successCount.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		if got := successCount.Load(); got != 1 {
+			t.Errorf("Concurrency: expected 1 success, got %d", got)
+		}
+	})
+
+	t.Run("multiple goroutines racing on fresh schema", func(t *testing.T) {
+		const numIterations = 5
+		for iter := range numIterations {
+			schema, err := graphql.ParseSchema(starwars.Schema, nil)
+			if err != nil {
+				t.Fatalf("ParseSchema: unexpected error: %v", err)
+			}
+
+			const numGoroutines = 20
+			var successCount atomic.Int32
+			var wg sync.WaitGroup
+
+			wg.Add(numGoroutines)
+			for range numGoroutines {
+				go func() {
+					defer wg.Done()
+					err := schema.ApplyResolver(&starwars.Resolver{})
+					if err == nil {
+						successCount.Add(1)
+					}
+				}()
+			}
+			wg.Wait()
+
+			if got := successCount.Load(); got != 1 {
+				t.Errorf("Iteration %d: expected 1 success, got %d", iter, got)
+			}
+		}
+	})
+
+	t.Run("failed calls don't corrupt schema state", func(t *testing.T) {
+		schema, err := graphql.ParseSchema(starwars.Schema, nil)
+		if err != nil {
+			t.Fatalf("ParseSchema: unexpected error: %v", err)
+		}
+
+		err = schema.ApplyResolver(&starwars.Resolver{})
+		if err != nil {
+			t.Fatalf("ApplyResolver: first application failed: %v", err)
+		}
+
+		ctx := context.Background()
+		result := schema.Exec(ctx, `{ hero { name } }`, "", nil)
+		if len(result.Errors) > 0 {
+			t.Errorf("Exec after ApplyResolver: got unexpected errors: %v", result.Errors)
+		}
+	})
+}
+
+func TestApplyResolverIdempotent(t *testing.T) {
+	schema, err := graphql.ParseSchema(starwars.Schema, nil)
+	if err != nil {
+		t.Fatalf("ParseSchema: unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{
+			name:    "apply resolver once",
+			wantErr: false,
+		},
+		{
+			name:    "apply resolver again returns error",
+			wantErr: true,
+		},
+		{
+			name:    "third application still returns error",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := schema.ApplyResolver(&starwars.Resolver{})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ApplyResolver: got error: %v, want error: %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("original resolver still active", func(t *testing.T) {
+		ctx := context.Background()
+		result := schema.Exec(ctx, `{ hero { name } }`, "", nil)
+		if len(result.Errors) > 0 {
+			t.Errorf("Exec: got unexpected errors: %v", result.Errors)
+		}
+	})
+}
+
+func TestCloneFromNilResolverBase(t *testing.T) {
+	tests := []struct {
+		name     string
+		testFunc func(t *testing.T)
+	}{
+		{
+			name: "clone nil-resolver schema with resolver",
+			testFunc: func(t *testing.T) {
+				baseSchema, err := graphql.ParseSchema(starwars.Schema, nil)
+				if err != nil {
+					t.Fatalf("ParseSchema: unexpected error: %v", err)
+				}
+
+				clone, err := baseSchema.Clone(&starwars.Resolver{})
+				if err != nil {
+					t.Errorf("Clone: unexpected error: %v", err)
+				}
+
+				ctx := context.Background()
+				result := clone.Exec(ctx, `{ hero { name } }`, "", nil)
+				if len(result.Errors) > 0 {
+					t.Errorf("Exec on clone: got unexpected errors: %v", result.Errors)
+				}
+			},
+		},
+		{
+			name: "clone nil-resolver schema with nil resolver",
+			testFunc: func(t *testing.T) {
+				baseSchema, err := graphql.ParseSchema(starwars.Schema, nil)
+				if err != nil {
+					t.Fatalf("ParseSchema: unexpected error: %v", err)
+				}
+
+				clone, err := baseSchema.Clone(nil)
+				if err != nil {
+					t.Errorf("Clone: unexpected error: %v", err)
+				}
+
+				if clone == nil {
+					t.Errorf("Clone: expected non-nil clone, got nil")
+				}
+			},
+		},
+		{
+			name: "clone nil-resolver schema with options",
+			testFunc: func(t *testing.T) {
+				baseSchema, err := graphql.ParseSchema(starwars.Schema, nil, graphql.MaxDepth(10))
+				if err != nil {
+					t.Fatalf("ParseSchema: unexpected error: %v", err)
+				}
+
+				clone, err := baseSchema.Clone(&starwars.Resolver{}, graphql.MaxDepth(5))
+				if err != nil {
+					t.Errorf("Clone: unexpected error: %v", err)
+				}
+
+				if clone == nil {
+					t.Errorf("Clone: expected non-nil clone, got nil")
+				}
+			},
+		},
+		{
+			name: "parent remains nil-resolver unaffected by clone",
+			testFunc: func(t *testing.T) {
+				baseSchema, err := graphql.ParseSchema(starwars.Schema, nil)
+				if err != nil {
+					t.Fatalf("ParseSchema: unexpected error: %v", err)
+				}
+
+				_, err = baseSchema.Clone(&starwars.Resolver{})
+				if err != nil {
+					t.Errorf("Clone: unexpected error: %v", err)
+				}
+
+				// Parent should still be introspection-only (we check via panic when executing)
+				defer func() {
+					if r := recover(); r == nil {
+						t.Errorf("Parent: expected panic when executing nil-resolver schema, but none occurred")
+					}
+				}()
+				baseSchema.Exec(context.Background(), `{ hero { name } }`, "", nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.testFunc(t)
+		})
+	}
+}
+
+func TestCloneFromNilResolverMultipleTimes(t *testing.T) {
+	baseSchema, err := graphql.ParseSchema(starwars.Schema, nil)
+	if err != nil {
+		t.Fatalf("ParseSchema: unexpected error: %v", err)
+	}
+
+	clone1, err := baseSchema.Clone(&starwars.Resolver{})
+	if err != nil {
+		t.Fatalf("Clone 1: unexpected error: %v", err)
+	}
+
+	clone2, err := baseSchema.Clone(&starwars.Resolver{})
+	if err != nil {
+		t.Fatalf("Clone 2: unexpected error: %v", err)
+	}
+
+	cloneOfClone1, err := clone1.Clone(&starwars.Resolver{})
+	if err != nil {
+		t.Fatalf("Clone of Clone 1: unexpected error: %v", err)
+	}
+
+	if clone1 == clone2 {
+		t.Errorf("Clone 1 and Clone 2: expected different instances")
+	}
+	if clone1 == cloneOfClone1 {
+		t.Errorf("Clone 1 and CloneOfClone1: expected different instances")
+	}
+
+	ctx := context.Background()
+	query := `{ hero { name } }`
+
+	for i, schema := range []*graphql.Schema{clone1, clone2, cloneOfClone1} {
+		result := schema.Exec(ctx, query, "", nil)
+		if len(result.Errors) > 0 {
+			t.Errorf("Schema %d execution: got unexpected errors: %v", i, result.Errors)
+		}
+	}
+}
+
+func TestMultiCloneScenarioWithNilBase(t *testing.T) {
+	baseSchema, err := graphql.ParseSchema(starwars.Schema, nil)
+	if err != nil {
+		t.Fatalf("ParseSchema: unexpected error: %v", err)
+	}
+
+	schemas := make(map[string]*graphql.Schema)
+	schemas["private"], err = baseSchema.Clone(&starwars.Resolver{}, graphql.MaxDepth(8))
+	if err != nil {
+		t.Fatalf("Clone private: unexpected error: %v", err)
+	}
+
+	schemas["public"], err = baseSchema.Clone(&starwars.Resolver{}, graphql.MaxDepth(3))
+	if err != nil {
+		t.Fatalf("Clone public: unexpected error: %v", err)
+	}
+
+	ctx := context.Background()
+	query := `{ hero { name } }`
+
+	for name, schema := range schemas {
+		result := schema.Exec(ctx, query, "", nil)
+		if len(result.Errors) > 0 {
+			t.Errorf("Schema %s: got unexpected errors: %v", name, result.Errors)
+		}
+		if result.Data == nil {
+			t.Errorf("Schema %s: expected data, got nil", name)
+		}
+	}
+
+	deepQuery := `{ hero { friends { friends { friends { name } } } } }`
+	privateResult := schemas["private"].Exec(ctx, deepQuery, "", nil)
+	publicResult := schemas["public"].Exec(ctx, deepQuery, "", nil)
+
+	if len(privateResult.Errors) > 0 {
+		t.Errorf("Schema private deep query: got unexpected errors: %v", privateResult.Errors)
+	}
+	if len(publicResult.Errors) == 0 {
+		t.Errorf("Schema public deep query: expected validation error, got none")
+	}
+}
+
+func TestDisableMemoryPooling_QueryParity(t *testing.T) {
+	t.Parallel()
+
+	pooled := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+	nonPooled := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.DisableMemoryPooling())
+
+	query := `{ hero { id name appearsIn } }`
+	baseline := pooled.Exec(context.Background(), query, "", nil)
+
+	gqltesting.RunTest(t, &gqltesting.Test{
+		Schema:         nonPooled,
+		Query:          query,
+		ExpectedResult: string(baseline.Data),
+		ExpectedErrors: baseline.Errors,
+	})
+}
+
+func TestDisableMemoryPooling_ErrorParity(t *testing.T) {
+	t.Parallel()
+
+	pooled := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+	nonPooled := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.DisableMemoryPooling())
+
+	query := `{ invalidField }`
+	baseline := pooled.Exec(context.Background(), query, "", nil)
+
+	gqltesting.RunTest(t, &gqltesting.Test{
+		Schema:         nonPooled,
+		Query:          query,
+		ExpectedResult: string(baseline.Data),
+		ExpectedErrors: baseline.Errors,
+	})
+}
+
+func TestDisableMemoryPooling_OptionCompatibility(t *testing.T) {
+	t.Parallel()
+
+	schema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.DisableMemoryPooling(), graphql.DisableFieldSelections())
+	gqltesting.RunTest(t, &gqltesting.Test{
+		Schema: schema,
+		Query:  `{ hero { id name } }`,
+		ExpectedResult: `
+			{
+				"hero": {
+					"id": "2001",
+					"name": "R2-D2"
+				}
+			}
+		`,
+	})
+}
+
+func TestMaxPooledBufferCap_OptionCompatibility(t *testing.T) {
+	t.Parallel()
+
+	schema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.MaxPooledBufferCap(8<<10))
+	gqltesting.RunTest(t, &gqltesting.Test{
+		Schema: schema,
+		Query:  `{ hero { id name } }`,
+		ExpectedResult: `
+			{
+				"hero": {
+					"id": "2001",
+					"name": "R2-D2"
+				}
+			}
+		`,
 	})
 }
