@@ -14,8 +14,8 @@ import (
 	"github.com/tribunadigital/graphql-go/errors"
 	"github.com/tribunadigital/graphql-go/internal/exec/resolvable"
 	"github.com/tribunadigital/graphql-go/internal/exec/selected"
+	"github.com/tribunadigital/graphql-go/internal/exec/selections"
 	"github.com/tribunadigital/graphql-go/internal/query"
-	"github.com/tribunadigital/graphql-go/internal/selections"
 	"github.com/tribunadigital/graphql-go/log"
 	"github.com/tribunadigital/graphql-go/trace/tracer"
 )
