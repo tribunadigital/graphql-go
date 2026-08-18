@@ -180,7 +180,6 @@ func TestExtendResolver(t *testing.T) {
 
 	gqltesting.RunTests(t, []*gqltesting.Test{
 		{
-
 			Schema: graphql.MustParseSchema(`
 				schema {
 					query: Query
