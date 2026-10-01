@@ -328,6 +328,7 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 	case *ast.ObjectTypeDefinition, *ast.InterfaceTypeDefinition, *ast.Union:
 		if s.ExtResolver != nil {
 			if v, ok := s.ExtResolver[t.String()]; ok {
+				resolver = addressable(resolver)
 				if resolver.Kind() == reflect.Struct {
 					resolver = reflect.NewAt(v.Elem().Type(), unsafe.Pointer(resolver.UnsafeAddr()))
 				} else {
@@ -461,4 +462,19 @@ func (p *pathSegment) toSlice() []any {
 		return nil
 	}
 	return append(p.parent.toSlice(), p.value)
+}
+
+// addressable returns v itself when it can be addressed, otherwise an addressable copy.
+// Extension resolvers are applied through unsafe casts that need a real address, and
+// struct values reaching the executor through an interface are not addressable.
+func addressable(v reflect.Value) reflect.Value {
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Struct && !v.CanAddr() {
+		c := reflect.New(v.Type()).Elem()
+		c.Set(v)
+		return c
+	}
+	return v
 }
