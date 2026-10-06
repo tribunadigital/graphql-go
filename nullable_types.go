@@ -5,6 +5,31 @@ import (
 	"math"
 )
 
+// NullID is an ID that can be null. Use it in input structs to
+// differentiate a value explicitly set to null from an omitted value.
+// When the value is defined (either null or a value) Set is true.
+type NullID struct {
+	Value *ID
+	Set   bool
+}
+
+func (NullID) ImplementsGraphQLType(name string) bool {
+	return name == "ID"
+}
+
+func (s *NullID) UnmarshalGraphQL(input any) error {
+	s.Set = true
+
+	if input == nil {
+		return nil
+	}
+
+	s.Value = new(ID)
+	return s.Value.UnmarshalGraphQL(input)
+}
+
+func (s *NullID) Nullable() {}
+
 // NullString is a string that can be null. Use it in input structs to
 // differentiate a value explicitly set to null from an omitted value.
 // When the value is defined (either null or a value) Set is true.
@@ -17,7 +42,7 @@ func (NullString) ImplementsGraphQLType(name string) bool {
 	return name == "String"
 }
 
-func (s *NullString) UnmarshalGraphQL(input interface{}) error {
+func (s *NullString) UnmarshalGraphQL(input any) error {
 	s.Set = true
 
 	if input == nil {
@@ -35,7 +60,7 @@ func (s *NullString) UnmarshalGraphQL(input interface{}) error {
 
 func (s *NullString) Nullable() {}
 
-// NullBool is a string that can be null. Use it in input structs to
+// NullBool is a boolean that can be null. Use it in input structs to
 // differentiate a value explicitly set to null from an omitted value.
 // When the value is defined (either null or a value) Set is true.
 type NullBool struct {
@@ -47,7 +72,7 @@ func (NullBool) ImplementsGraphQLType(name string) bool {
 	return name == "Boolean"
 }
 
-func (s *NullBool) UnmarshalGraphQL(input interface{}) error {
+func (s *NullBool) UnmarshalGraphQL(input any) error {
 	s.Set = true
 
 	if input == nil {
@@ -65,7 +90,7 @@ func (s *NullBool) UnmarshalGraphQL(input interface{}) error {
 
 func (s *NullBool) Nullable() {}
 
-// NullInt is a string that can be null. Use it in input structs to
+// NullInt is an int that can be null. Use it in input structs to
 // differentiate a value explicitly set to null from an omitted value.
 // When the value is defined (either null or a value) Set is true.
 type NullInt struct {
@@ -77,7 +102,7 @@ func (NullInt) ImplementsGraphQLType(name string) bool {
 	return name == "Int"
 }
 
-func (s *NullInt) UnmarshalGraphQL(input interface{}) error {
+func (s *NullInt) UnmarshalGraphQL(input any) error {
 	s.Set = true
 
 	if input == nil {
@@ -89,10 +114,10 @@ func (s *NullInt) UnmarshalGraphQL(input interface{}) error {
 		s.Value = &v
 		return nil
 	case float64:
-		coerced := int32(v)
-		if v < math.MinInt32 || v > math.MaxInt32 || float64(coerced) != v {
+		if v < math.MinInt32 || v > math.MaxInt32 || math.Trunc(v) != v {
 			return fmt.Errorf("not a 32-bit integer")
 		}
+		coerced := int32(v)
 		s.Value = &coerced
 		return nil
 	default:
@@ -102,7 +127,7 @@ func (s *NullInt) UnmarshalGraphQL(input interface{}) error {
 
 func (s *NullInt) Nullable() {}
 
-// NullFloat is a string that can be null. Use it in input structs to
+// NullFloat is a float that can be null. Use it in input structs to
 // differentiate a value explicitly set to null from an omitted value.
 // When the value is defined (either null or a value) Set is true.
 type NullFloat struct {
@@ -114,7 +139,7 @@ func (NullFloat) ImplementsGraphQLType(name string) bool {
 	return name == "Float"
 }
 
-func (s *NullFloat) UnmarshalGraphQL(input interface{}) error {
+func (s *NullFloat) UnmarshalGraphQL(input any) error {
 	s.Set = true
 
 	if input == nil {
@@ -133,6 +158,10 @@ func (s *NullFloat) UnmarshalGraphQL(input interface{}) error {
 		coerced := float64(v)
 		s.Value = &coerced
 		return nil
+	case int64:
+		coerced := float64(v)
+		s.Value = &coerced
+		return nil
 	default:
 		return fmt.Errorf("wrong type for Float: %T", v)
 	}
@@ -140,7 +169,7 @@ func (s *NullFloat) UnmarshalGraphQL(input interface{}) error {
 
 func (s *NullFloat) Nullable() {}
 
-// NullTime is a string that can be null. Use it in input structs to
+// NullTime is a time value that can be null. Use it in input structs to
 // differentiate a value explicitly set to null from an omitted value.
 // When the value is defined (either null or a value) Set is true.
 type NullTime struct {
@@ -152,7 +181,7 @@ func (NullTime) ImplementsGraphQLType(name string) bool {
 	return name == "Time"
 }
 
-func (s *NullTime) UnmarshalGraphQL(input interface{}) error {
+func (s *NullTime) UnmarshalGraphQL(input any) error {
 	s.Set = true
 
 	if input == nil {

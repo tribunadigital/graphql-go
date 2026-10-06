@@ -10,14 +10,23 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/tribunadigital/graphql-go/ast"
 	"github.com/tribunadigital/graphql-go/errors"
 	"github.com/tribunadigital/graphql-go/internal/exec/resolvable"
 	"github.com/tribunadigital/graphql-go/internal/exec/selected"
+	"github.com/tribunadigital/graphql-go/internal/exec/selections"
 	"github.com/tribunadigital/graphql-go/internal/query"
 	"github.com/tribunadigital/graphql-go/log"
 	"github.com/tribunadigital/graphql-go/trace/tracer"
-	"github.com/tribunadigital/graphql-go/types"
 )
+
+var bytesBufferPool = sync.Pool{ //nolint:gochecknoglobals
+	New: func() any {
+		return &bytes.Buffer{}
+	},
+}
+
+var nullLiteral = []byte("null") //nolint:gochecknoglobals
 
 type Request struct {
 	selected.Request
@@ -26,6 +35,9 @@ type Request struct {
 	Logger                   log.Logger
 	PanicHandler             errors.PanicHandler
 	SubscribeResolverTimeout time.Duration
+	DisableFieldSelections   bool
+	DisableMemoryPooling     bool
+	MaxPooledBufferCapacity  int
 }
 
 func (r *Request) handlePanic(ctx context.Context) {
@@ -36,15 +48,33 @@ func (r *Request) handlePanic(ctx context.Context) {
 }
 
 type extensionser interface {
-	Extensions() map[string]interface{}
+	Extensions() map[string]any
 }
 
-func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *types.OperationDefinition) ([]byte, []*errors.QueryError) {
+func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *ast.OperationDefinition) ([]byte, []*errors.QueryError) {
 	var out bytes.Buffer
 	func() {
 		defer r.handlePanic(ctx)
 		sels := selected.ApplyOperation(&r.Request, s, op)
-		r.execSelections(ctx, sels, nil, s, s.Resolver, &out, op.Type == query.Mutation)
+		var resolver reflect.Value
+		switch op.Type {
+		case query.Query:
+			resolver = s.QueryResolver
+		case query.Mutation:
+			resolver = s.MutationResolver
+		case query.Subscription:
+			resolver = s.SubscriptionResolver
+		default:
+			panic("unknown query operation")
+		}
+
+		if errs := validateSelections(ctx, sels, nil, s); errs != nil {
+			r.Errs = errs
+			out.Write(nullLiteral)
+			return
+		}
+
+		r.execSelections(ctx, sels, nil, s, resolver, &out, op.Type == query.Mutation)
 	}()
 
 	if err := ctx.Err(); err != nil {
@@ -54,6 +84,11 @@ func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *types.O
 	return out.Bytes(), r.Errs
 }
 
+type fieldToValidate struct {
+	field *selected.SchemaField
+	sels  []selected.Selection
+}
+
 type fieldToExec struct {
 	field    *selected.SchemaField
 	sels     []selected.Selection
@@ -61,8 +96,45 @@ type fieldToExec struct {
 	out      *bytes.Buffer
 }
 
+func (f *fieldToExec) resolve(ctx context.Context, s *resolvable.Schema) (output any, err error) {
+	res := f.resolver
+	if v, ok := s.ExtResolver[f.field.TypeName]; ok {
+		res = reflect.NewAt(v.Elem().Type(), unsafe.Pointer(res.Elem().UnsafeAddr()))
+	}
+	return f.field.Resolve(ctx, res)
+}
+
 func resolvedToNull(b *bytes.Buffer) bool {
-	return bytes.Equal(b.Bytes(), []byte("null"))
+	return bytes.Equal(b.Bytes(), nullLiteral)
+}
+
+func (r *Request) acquireBuffer() *bytes.Buffer {
+	if r.DisableMemoryPooling {
+		return &bytes.Buffer{}
+	}
+	b := bytesBufferPool.Get().(*bytes.Buffer)
+	b.Reset()
+	return b
+}
+
+func (r *Request) releaseBuffer(b *bytes.Buffer) {
+	if r.DisableMemoryPooling {
+		return
+	}
+	if b == nil {
+		return
+	}
+	if b.Cap() > r.MaxPooledBufferCapacity {
+		return
+	}
+	bytesBufferPool.Put(b)
+}
+
+func (r *Request) releaseFieldBuffers(fields []*fieldToExec) {
+	for _, f := range fields {
+		r.releaseBuffer(f.out)
+		f.out = nil
+	}
 }
 
 func (r *Request) execSelections(ctx context.Context, sels []selected.Selection, path *pathSegment, s *resolvable.Schema, resolver reflect.Value, out *bytes.Buffer, serially bool) {
@@ -78,14 +150,14 @@ func (r *Request) execSelections(ctx context.Context, sels []selected.Selection,
 			go func(f *fieldToExec) {
 				defer wg.Done()
 				defer r.handlePanic(ctx)
-				f.out = new(bytes.Buffer)
+				f.out = r.acquireBuffer()
 				execFieldSelection(ctx, r, s, f, &pathSegment{path, f.field.Alias}, true)
 			}(f)
 		}
 		wg.Wait()
 	} else {
 		for _, f := range fields {
-			f.out = new(bytes.Buffer)
+			f.out = r.acquireBuffer()
 			execFieldSelection(ctx, r, s, f, &pathSegment{path, f.field.Alias}, true)
 		}
 	}
@@ -95,9 +167,10 @@ func (r *Request) execSelections(ctx context.Context, sels []selected.Selection,
 		// If a non-nullable child resolved to null, an error was added to the
 		// "errors" list in the response, so this field resolves to null.
 		// If this field is non-nullable, the error is propagated to its parent.
-		if _, ok := f.field.Type.(*types.NonNull); ok && resolvedToNull(f.out) {
+		if _, ok := f.field.Type.(*ast.NonNull); ok && resolvedToNull(f.out) {
+			r.releaseFieldBuffers(fields)
 			out.Reset()
-			out.Write([]byte("null"))
+			out.Write(nullLiteral)
 			return
 		}
 
@@ -109,6 +182,8 @@ func (r *Request) execSelections(ctx context.Context, sels []selected.Selection,
 		out.WriteByte('"')
 		out.WriteByte(':')
 		out.Write(f.out.Bytes())
+		r.releaseBuffer(f.out)
+		f.out = nil
 	}
 	out.WriteByte('}')
 }
@@ -178,9 +253,7 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 	var err *errors.QueryError
 
 	traceCtx, finish := r.Tracer.TraceField(ctx, f.field.TraceLabel, f.field.TypeName, f.field.Name, !f.field.Async, f.field.Args)
-	defer func() {
-		finish(err)
-	}()
+	defer finish(err)
 
 	err = func() (err *errors.QueryError) {
 		defer func() {
@@ -200,42 +273,22 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 			return errors.ErrorfSkip("%s", err) // don't execute any more resolvers if context got cancelled
 		}
 
-		res := f.resolver
-		if f.field.UseMethodResolver() {
-			var in []reflect.Value
-			if f.field.HasContext {
-				in = append(in, reflect.ValueOf(traceCtx))
-			}
-			if f.field.ArgsPacker != nil {
-				in = append(in, f.field.PackedArgs)
-			}
-
-			var callOut []reflect.Value
-
-			if v, ok := s.ExtResolver[f.field.TypeName]; ok {
-				res = reflect.NewAt(v.Elem().Type(), unsafe.Pointer(res.Elem().UnsafeAddr()))
-			}
-
-			callOut = res.Method(f.field.MethodIndex).Call(in)
-			result = callOut[0]
-
-			if f.field.HasError && !callOut[1].IsNil() {
-				resolverErr := callOut[1].Interface().(error)
-				err := errors.Errorf("%s", resolverErr)
-				err.Path = path.toSlice()
-				err.ResolverError = resolverErr
-				if ex, ok := callOut[1].Interface().(extensionser); ok {
-					err.Extensions = ex.Extensions()
-				}
-				return err
-			}
-		} else {
-			// TODO extract out unwrapping ptr logic to a common place
-			if res.Kind() == reflect.Ptr {
-				res = res.Elem()
-			}
-			result = res.FieldByIndex(f.field.FieldIndex)
+		if len(f.sels) > 0 && !r.DisableFieldSelections {
+			ctx = selections.With(traceCtx, f.sels)
 		}
+		res, resolverErr := f.resolve(ctx, s)
+		if resolverErr != nil {
+			err := errors.Errorf("%s", resolverErr)
+			err.Path = path.toSlice()
+			err.ResolverError = resolverErr
+			if ex, ok := resolverErr.(extensionser); ok {
+				err.Extensions = ex.Extensions()
+			}
+			return err
+		}
+
+		result = reflect.ValueOf(res)
+
 		return nil
 	}()
 
@@ -254,11 +307,11 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 	r.execSelectionSet(traceCtx, f.sels, f.field.Type, path, s, result, f.out)
 }
 
-func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selection, typ types.Type, path *pathSegment, s *resolvable.Schema, resolver reflect.Value, out *bytes.Buffer) {
+func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selection, typ ast.Type, path *pathSegment, s *resolvable.Schema, resolver reflect.Value, out *bytes.Buffer) {
 	t, nonNull := unwrapNonNull(typ)
 
 	// a reflect.Value of a nil interface will show up as an Invalid value
-	if resolver.Kind() == reflect.Invalid || ((resolver.Kind() == reflect.Ptr || resolver.Kind() == reflect.Interface) && resolver.IsNil()) {
+	if resolver.Kind() == reflect.Invalid || ((resolver.Kind() == reflect.Pointer || resolver.Kind() == reflect.Interface) && resolver.IsNil()) {
 		// If a field of a non-null type resolves to null (either because the
 		// function to resolve the field returned null or because an error occurred),
 		// add an error to the "errors" list in the response.
@@ -272,10 +325,10 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 	}
 
 	switch t.(type) {
-	// case *schema.Object, *schema.Interface, *schema.Union:
-	case *types.ObjectTypeDefinition, *types.InterfaceTypeDefinition, *types.Union:
+	case *ast.ObjectTypeDefinition, *ast.InterfaceTypeDefinition, *ast.Union:
 		if s.ExtResolver != nil {
 			if v, ok := s.ExtResolver[t.String()]; ok {
+				resolver = addressable(resolver)
 				if resolver.Kind() == reflect.Struct {
 					resolver = reflect.NewAt(v.Elem().Type(), unsafe.Pointer(resolver.UnsafeAddr()))
 				} else {
@@ -284,21 +337,20 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 			}
 		}
 		r.execSelections(ctx, sels, path, s, resolver, out, false)
-
 		return
 	}
 
 	// Any pointers or interfaces at this point should be non-nil, so we can get the actual value of them
 	// for serialization
-	if resolver.Kind() == reflect.Ptr || resolver.Kind() == reflect.Interface {
+	if resolver.Kind() == reflect.Pointer || resolver.Kind() == reflect.Interface {
 		resolver = resolver.Elem()
 	}
 
 	switch t := t.(type) {
-	case *types.List:
+	case *ast.List:
 		r.execList(ctx, sels, t, path, s, resolver, out)
 
-	case *types.ScalarTypeDefinition:
+	case *ast.ScalarTypeDefinition:
 		v := resolver.Interface()
 		data, err := json.Marshal(v)
 		if err != nil {
@@ -306,7 +358,7 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 		}
 		out.Write(data)
 
-	case *types.EnumTypeDefinition:
+	case *ast.EnumTypeDefinition:
 		var stringer fmt.Stringer = resolver
 		if s, ok := resolver.Interface().(fmt.Stringer); ok {
 			stringer = s
@@ -335,41 +387,51 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 	}
 }
 
-func (r *Request) execList(ctx context.Context, sels []selected.Selection, typ *types.List, path *pathSegment, s *resolvable.Schema, resolver reflect.Value, out *bytes.Buffer) {
+func (r *Request) execList(ctx context.Context, sels []selected.Selection, typ *ast.List, path *pathSegment, s *resolvable.Schema, resolver reflect.Value, out *bytes.Buffer) {
 	l := resolver.Len()
-	entryouts := make([]bytes.Buffer, l)
+	entryouts := make([]*bytes.Buffer, l)
 
 	if selected.HasAsyncSel(sels) {
 		// Limit the number of concurrent goroutines spawned as it can lead to large
 		// memory spikes for large lists.
 		concurrency := cap(r.Limiter)
+		if concurrency <= 0 {
+			concurrency = 1
+		}
+		var wg sync.WaitGroup
+		wg.Add(l)
 		sem := make(chan struct{}, concurrency)
-		for i := 0; i < l; i++ {
+		for i := range l {
+			entryouts[i] = r.acquireBuffer()
 			sem <- struct{}{}
 			go func(i int) {
+				defer wg.Done()
 				defer func() { <-sem }()
 				defer r.handlePanic(ctx)
-				r.execSelectionSet(ctx, sels, typ.OfType, &pathSegment{path, i}, s, resolver.Index(i), &entryouts[i])
+				r.execSelectionSet(ctx, sels, typ.OfType, &pathSegment{path, i}, s, resolver.Index(i), entryouts[i])
 			}(i)
 		}
-		for i := 0; i < concurrency; i++ {
-			sem <- struct{}{}
-		}
+		wg.Wait()
 	} else {
-		for i := 0; i < l; i++ {
-			r.execSelectionSet(ctx, sels, typ.OfType, &pathSegment{path, i}, s, resolver.Index(i), &entryouts[i])
+		for i := range l {
+			entryouts[i] = r.acquireBuffer()
+			r.execSelectionSet(ctx, sels, typ.OfType, &pathSegment{path, i}, s, resolver.Index(i), entryouts[i])
 		}
 	}
 
-	_, listOfNonNull := typ.OfType.(*types.NonNull)
+	_, listOfNonNull := typ.OfType.(*ast.NonNull)
 
 	out.WriteByte('[')
 	for i, entryout := range entryouts {
 		// If the list wraps a non-null type and one of the list elements
 		// resolves to null, then the entire list resolves to null.
-		if listOfNonNull && resolvedToNull(&entryout) {
+		if listOfNonNull && resolvedToNull(entryout) {
+			for j, b := range entryouts {
+				r.releaseBuffer(b)
+				entryouts[j] = nil
+			}
 			out.Reset()
-			out.WriteString("null")
+			out.Write(nullLiteral)
 			return
 		}
 
@@ -377,12 +439,14 @@ func (r *Request) execList(ctx context.Context, sels []selected.Selection, typ *
 			out.WriteByte(',')
 		}
 		out.Write(entryout.Bytes())
+		r.releaseBuffer(entryout)
+		entryouts[i] = nil
 	}
 	out.WriteByte(']')
 }
 
-func unwrapNonNull(t types.Type) (types.Type, bool) {
-	if nn, ok := t.(*types.NonNull); ok {
+func unwrapNonNull(t ast.Type) (ast.Type, bool) {
+	if nn, ok := t.(*ast.NonNull); ok {
 		return nn.OfType, true
 	}
 	return t, false
@@ -390,12 +454,27 @@ func unwrapNonNull(t types.Type) (types.Type, bool) {
 
 type pathSegment struct {
 	parent *pathSegment
-	value  interface{}
+	value  any
 }
 
-func (p *pathSegment) toSlice() []interface{} {
+func (p *pathSegment) toSlice() []any {
 	if p == nil {
 		return nil
 	}
 	return append(p.parent.toSlice(), p.value)
+}
+
+// addressable returns v itself when it can be addressed, otherwise an addressable copy.
+// Extension resolvers are applied through unsafe casts that need a real address, and
+// struct values reaching the executor through an interface are not addressable.
+func addressable(v reflect.Value) reflect.Value {
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Struct && !v.CanAddr() {
+		c := reflect.New(v.Type()).Elem()
+		c.Set(v)
+		return c
+	}
+	return v
 }

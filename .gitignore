@@ -3,3 +3,8 @@
 /internal/validation/testdata/graphql-js
 /internal/validation/testdata/node_modules
 /vendor
+/specs
+/.*
+!/.github/actionlint.yaml
+!/.github/workflows/
+!/.github/workflows/**

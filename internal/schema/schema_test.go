@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tribunadigital/graphql-go/ast"
 	"github.com/tribunadigital/graphql-go/internal/schema"
-	"github.com/tribunadigital/graphql-go/types"
 )
 
 func TestParse(t *testing.T) {
@@ -15,14 +15,14 @@ func TestParse(t *testing.T) {
 		sdl                   string
 		useStringDescriptions bool
 		validateError         func(err error) error
-		validateSchema        func(s *types.Schema) error
+		validateSchema        func(s *ast.Schema) error
 	}{
 		{
 			name: "Parses interface definition",
 			sdl:  "interface Greeting { message: String! }",
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Greeting"
-				typ, ok := s.Types[typeName].(*types.InterfaceTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.InterfaceTypeDefinition)
 				if !ok {
 					return fmt.Errorf("interface %q not found", typeName)
 				}
@@ -39,10 +39,11 @@ func TestParse(t *testing.T) {
 		{
 			name: "Parses implementing type without providing required fields",
 			sdl: `
-			interface Greeting {
+			interface Greeting { 
 				message: String!
 			}
 			type Welcome implements Greeting {
+				id: ID!
 			}`,
 			validateError: func(err error) error {
 				if err == nil {
@@ -58,13 +59,13 @@ func TestParse(t *testing.T) {
 			name: "Parses type with description string",
 			sdl: `
 			"Single line description."
-			type Type {
+			type Type { 
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -84,9 +85,9 @@ func TestParse(t *testing.T) {
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -105,9 +106,9 @@ func TestParse(t *testing.T) {
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -140,9 +141,9 @@ func TestParse(t *testing.T) {
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -165,9 +166,9 @@ Second line of the description.
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -196,9 +197,9 @@ Second line of the description.
                 field: String
             }`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -220,9 +221,9 @@ Second line of the description.
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const typeName = "Type"
-				typ, ok := s.Types[typeName].(*types.ObjectTypeDefinition)
+				typ, ok := s.Types[typeName].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", typeName)
 				}
@@ -249,12 +250,12 @@ Second line of the description.
 			name: "Description is correctly parsed for non-described types",
 			sdl: `
 			"Some description."
-			scalar MyInt
-			type Type {
+			scalar MyInt 
+			type Type { 
 				field: String
 			}`,
 			useStringDescriptions: true,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				typ, ok := s.Types["Type"]
 				if !ok {
 					return fmt.Errorf("type %q not found", "Type")
@@ -271,11 +272,11 @@ Second line of the description.
 			# Multi-line
 			# comment.
 			" This description should be ignored. "
-			scalar MyInt
-			type Type {
+			scalar MyInt 
+			type Type { 
 				field: String
 			}`,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				typ, ok := s.Types["MyInt"]
 				if !ok {
 					return fmt.Errorf("scalar %q not found", "MyInt")
@@ -303,8 +304,8 @@ Second line of the description.
 				concat(a: String!, b: String!): String!
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typq, ok := s.Types["Query"].(*types.ObjectTypeDefinition)
+			validateSchema: func(s *ast.Schema) error {
+				typq, ok := s.Types["Query"].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Query")
 				}
@@ -316,7 +317,7 @@ Second line of the description.
 					return fmt.Errorf("field %q has an invalid type: %q", "hello", helloField.Type.String())
 				}
 
-				typm, ok := s.Types["Mutation"].(*types.ObjectTypeDefinition)
+				typm, ok := s.Types["Mutation"].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Mutation")
 				}
@@ -343,8 +344,8 @@ Second line of the description.
 			extend type Query {
 				world: String!
 			}`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Query"].(*types.ObjectTypeDefinition)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Query"].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Query")
 				}
@@ -383,8 +384,8 @@ Second line of the description.
 				concat(a: String!, b: String!): String!
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typq, ok := s.Types["Query"].(*types.ObjectTypeDefinition)
+			validateSchema: func(s *ast.Schema) error {
+				typq, ok := s.Types["Query"].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Query")
 				}
@@ -396,7 +397,7 @@ Second line of the description.
 					return fmt.Errorf("field %q has an invalid type: %q", "hello", helloField.Type.String())
 				}
 
-				typm, ok := s.Types["Mutation"].(*types.ObjectTypeDefinition)
+				typm, ok := s.Types["Mutation"].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Mutation")
 				}
@@ -425,8 +426,8 @@ Second line of the description.
 			extend type Product implements Named {
 				name: String!
 			}`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Product"].(*types.ObjectTypeDefinition)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Product"].(*ast.ObjectTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Product")
 				}
@@ -445,7 +446,7 @@ Second line of the description.
 					return fmt.Errorf("field %q has an invalid type: %q", "name", nameField.Type.String())
 				}
 
-				ifc, ok := s.Types["Named"].(*types.InterfaceTypeDefinition)
+				ifc, ok := s.Types["Named"].(*ast.InterfaceTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Named")
 				}
@@ -474,8 +475,8 @@ Second line of the description.
 			}
 			extend union Item = Coloured
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Item"].(*types.Union)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Item"].(*ast.Union)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Item")
 				}
@@ -508,8 +509,8 @@ Second line of the description.
 				GBP
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Currencies"].(*types.EnumTypeDefinition)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Currencies"].(*ast.EnumTypeDefinition)
 				if !ok {
 					return fmt.Errorf("enum %q not found", "Currencies")
 				}
@@ -606,11 +607,11 @@ Second line of the description.
 			type Coloured {
 				Colour: String!
 			}
-
+			
 			extend union Item = Coloured
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Item"].(*types.Union)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Item"].(*ast.Union)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Item")
 				}
@@ -646,8 +647,8 @@ Second line of the description.
 				name: String!
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Product"].(*types.InputObject)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Product"].(*ast.InputObject)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Product")
 				}
@@ -746,8 +747,8 @@ Second line of the description.
 				category: String!
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
-				typ, ok := s.Types["Product"].(*types.InterfaceTypeDefinition)
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["Product"].(*ast.InterfaceTypeDefinition)
 				if !ok {
 					return fmt.Errorf("type %q not found", "Product")
 				}
@@ -839,18 +840,18 @@ Second line of the description.
 
 			scalar Mass @repeatabledirective @repeatabledirective
 			`,
-			validateSchema: func(s *types.Schema) error {
-				namedEntityDirectives := s.Types["NamedEntity"].(*types.InterfaceTypeDefinition).Directives
+			validateSchema: func(s *ast.Schema) error {
+				namedEntityDirectives := s.Types["NamedEntity"].(*ast.InterfaceTypeDefinition).Directives
 				if len(namedEntityDirectives) != 1 || namedEntityDirectives[0].Name.Name != "directive" {
 					return fmt.Errorf("missing directive on NamedEntity interface, expected @directive but got %v", namedEntityDirectives)
 				}
 
-				timeDirectives := s.Types["Time"].(*types.ScalarTypeDefinition).Directives
+				timeDirectives := s.Types["Time"].(*ast.ScalarTypeDefinition).Directives
 				if len(timeDirectives) != 1 || timeDirectives[0].Name.Name != "directive" {
 					return fmt.Errorf("missing directive on Time scalar, expected @directive but got %v", timeDirectives)
 				}
 
-				photo := s.Types["Photo"].(*types.ObjectTypeDefinition)
+				photo := s.Types["Photo"].(*ast.ObjectTypeDefinition)
 				photoDirectives := photo.Directives
 				if len(photoDirectives) != 1 || photoDirectives[0].Name.Name != "objectdirective" {
 					return fmt.Errorf("missing directive on Time scalar, expected @objectdirective but got %v", photoDirectives)
@@ -859,17 +860,17 @@ Second line of the description.
 					return fmt.Errorf("expected Photo.id to have 2 directives but got %v", photoDirectives)
 				}
 
-				directionDirectives := s.Types["Direction"].(*types.EnumTypeDefinition).Directives
+				directionDirectives := s.Types["Direction"].(*ast.EnumTypeDefinition).Directives
 				if len(directionDirectives) != 1 || directionDirectives[0].Name.Name != "enumdirective" {
 					return fmt.Errorf("missing directive on Direction enum, expected @enumdirective but got %v", directionDirectives)
 				}
 
-				unionDirectives := s.Types["Union"].(*types.Union).Directives
+				unionDirectives := s.Types["Union"].(*ast.Union).Directives
 				if len(unionDirectives) != 1 || unionDirectives[0].Name.Name != "uniondirective" {
 					return fmt.Errorf("missing directive on Union union, expected @uniondirective but got %v", unionDirectives)
 				}
 
-				massDirectives := s.Types["Mass"].(*types.ScalarTypeDefinition).Directives
+				massDirectives := s.Types["Mass"].(*ast.ScalarTypeDefinition).Directives
 				if len(massDirectives) != 2 || massDirectives[0].Name.Name != "repeatabledirective" || massDirectives[1].Name.Name != "repeatabledirective" {
 					return fmt.Errorf("missing directive on Repeatable scalar, expected @repeatabledirective @repeatabledirective but got %v", massDirectives)
 				}
@@ -882,7 +883,7 @@ Second line of the description.
 			directive @nonrepeatabledirective on SCALAR
 			directive @repeatabledirective repeatable on SCALAR
 			`,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				if dir := s.Directives["nonrepeatabledirective"]; dir.Repeatable {
 					return fmt.Errorf("did not expect directive to be repeatable: %v", dir)
 				}
@@ -967,7 +968,7 @@ Second line of the description.
 		{
 			name: "Decorating input object with an undeclared directive should return an error",
 			sdl: `
-			input InputObject @undeclareddirective{}
+			input InputObject @undeclareddirective{field: String!}
 			`,
 			validateError: func(err error) error {
 				prefix := `graphql: directive "undeclareddirective" not found`
@@ -980,7 +981,7 @@ Second line of the description.
 		{
 			name: "Decorating interface with an undeclared directive should return an error",
 			sdl: `
-			interface I @undeclareddirective {}
+			interface I @undeclareddirective {field: String!}
 			`,
 			validateError: func(err error) error {
 				prefix := `graphql: directive "undeclareddirective" not found`
@@ -1016,7 +1017,7 @@ func TestInterfaceImplementsInterface(t *testing.T) {
 		sdl                   string
 		useStringDescriptions bool
 		validateError         func(err error) error
-		validateSchema        func(s *types.Schema) error
+		validateSchema        func(s *ast.Schema) error
 	}{
 		{
 			name: "Parses interface implementing other interface",
@@ -1028,9 +1029,9 @@ func TestInterfaceImplementsInterface(t *testing.T) {
 				field: String!
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const implementedInterfaceName = "Bar"
-				typ, ok := s.Types[implementedInterfaceName].(*types.InterfaceTypeDefinition)
+				typ, ok := s.Types[implementedInterfaceName].(*ast.InterfaceTypeDefinition)
 				if !ok {
 					return fmt.Errorf("interface %q not found", implementedInterfaceName)
 				}
@@ -1068,9 +1069,9 @@ func TestInterfaceImplementsInterface(t *testing.T) {
 				field: String!
 			}
 			`,
-			validateSchema: func(s *types.Schema) error {
+			validateSchema: func(s *ast.Schema) error {
 				const implementedInterfaceName = "Baz"
-				typ, ok := s.Types[implementedInterfaceName].(*types.InterfaceTypeDefinition)
+				typ, ok := s.Types[implementedInterfaceName].(*ast.InterfaceTypeDefinition)
 				if !ok {
 					return fmt.Errorf("interface %q not found", implementedInterfaceName)
 				}
@@ -1118,6 +1119,293 @@ func TestInterfaceImplementsInterface(t *testing.T) {
 			`,
 			validateError: func(err error) error {
 				msg := `graphql: interface "C" must explicitly implement transitive interface "A"`
+				if err == nil || err.Error() != msg {
+					return fmt.Errorf("expected error %q, but got %q", msg, err)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Unions can be defined with a leading pipe",
+			sdl: `
+			type Named {
+				name: String!
+			}
+			type Numbered {
+				num: Int!
+			}
+			union Item1 =
+				| Named
+				| Numbered
+			union Item2 = | Named | Numbered
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				for _, itemName := range []string{"Item1", "Item2"} {
+					typ, ok := s.Types[itemName].(*ast.Union)
+					if !ok {
+						return fmt.Errorf("type %q not found", "Item")
+					}
+					if len(typ.UnionMemberTypes) != 2 {
+						return fmt.Errorf("Expected 2 possible types, but instead got %d types", len(typ.UnionMemberTypes))
+					}
+					posible := map[string]struct{}{
+						"Named":    {},
+						"Numbered": {},
+					}
+					for _, pt := range typ.UnionMemberTypes {
+						if _, ok := posible[pt.Name]; !ok {
+							return fmt.Errorf("Unexpected possible type %q", pt.Name)
+						}
+					}
+				}
+				return nil
+			},
+		},
+		{
+			name: "Accepts object implementing interface with additional optional argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name(format: String!, locale: String): String!
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface missing required interface argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name: String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `expects argument "format"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface with incompatible argument type",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name(format: Int!): String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `argument "format" has type "String!"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				if want, have := `defines type "Int!"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface with additional required argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			type User implements Node {
+				name(format: String!, locale: String!): String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `additional argument "locale"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				if want, have := `must not be required`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects interface implementing interface with additional required argument",
+			sdl: `
+			interface Node {
+				name(format: String!): String!
+			}
+			interface Entity implements Node {
+				name(format: String!, locale: String!): String!
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `implementing interface "Entity"`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				if want, have := `must not be required`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Parses valid OneOf input type with nullable fields",
+			sdl: `
+			input FindUserInput @oneOf {
+				id: ID
+				email: String
+			}
+			type Query {
+				findUser(by: FindUserInput): String
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				typ, ok := s.Types["FindUserInput"].(*ast.InputObject)
+				if !ok {
+					return fmt.Errorf("type %q not found", "FindUserInput")
+				}
+				if len(typ.Values) != 2 {
+					return fmt.Errorf("expected 2 fields, got %d", len(typ.Values))
+				}
+				if typ.Directives.Get("oneOf") == nil {
+					return fmt.Errorf("expected @oneOf directive on FindUserInput")
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects OneOf input type with non-nullable field",
+			sdl: `
+			input FindUserInput @oneOf {
+				id: ID!
+				email: String
+			}
+			type Query {
+				findUser(by: FindUserInput): String
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `OneOf input field FindUserInput.id must be nullable`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects OneOf input type with field default value",
+			sdl: `
+			input FindUserInput @oneOf {
+				id: ID
+				priority: Int = 1
+			}
+			type Query {
+				findUser(by: FindUserInput): String
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if want, have := `OneOf input field FindUserInput.priority cannot have a default value`, err.Error(); !strings.Contains(have, want) {
+					return fmt.Errorf("unexpected error: want %q to contain %q", have, want)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects @oneOf directive on non-input type",
+			sdl: `
+			type Query @oneOf {
+				field: String
+			}
+			`,
+			validateError: func(err error) error {
+				if err == nil {
+					return fmt.Errorf("want error, have <nil>")
+				}
+				if strings.Contains(err.Error(), "@oneOf") && strings.Contains(err.Error(), "INPUT_OBJECT") {
+					return nil
+				}
+				return fmt.Errorf("unexpected error: want error about @oneOf only on INPUT_OBJECT, have %q", err.Error())
+			},
+		},
+		{
+			name: "Accepts object implementing interface where both field and interface field are deprecated",
+			sdl: `
+			interface Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			type User implements Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				return nil
+			},
+		},
+		{
+			name: "Accepts object implementing interface where interface field is deprecated and implementing field is not",
+			sdl: `
+			interface Node {
+				id: ID! @deprecated(reason: "old")
+			}
+			type User implements Node {
+				id: ID!
+			}
+			`,
+			validateSchema: func(s *ast.Schema) error {
+				return nil
+			},
+		},
+		{
+			name: "Rejects object implementing interface where interface field is not deprecated but implementing field is",
+			sdl: `
+			interface Node {
+				id: ID!
+			}
+			type User implements Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			`,
+			validateError: func(err error) error {
+				msg := `graphql: interface "Node" field "id" is not deprecated but implementing type "User" marks it as deprecated`
+				if err == nil || err.Error() != msg {
+					return fmt.Errorf("expected error %q, but got %q", msg, err)
+				}
+				return nil
+			},
+		},
+		{
+			name: "Rejects interface implementing interface where interface field is not deprecated but implementing interface field is",
+			sdl: `
+			interface Node {
+				id: ID!
+			}
+			interface Entity implements Node {
+				id: ID! @deprecated(reason: "use newId")
+			}
+			`,
+			validateError: func(err error) error {
+				msg := `graphql: interface "Node" field "id" is not deprecated but implementing interface "Entity" marks it as deprecated`
 				if err == nil || err.Error() != msg {
 					return fmt.Errorf("expected error %q, but got %q", msg, err)
 				}

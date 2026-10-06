@@ -4,21 +4,21 @@ import (
 	"fmt"
 	"text/scanner"
 
+	"github.com/tribunadigital/graphql-go/ast"
 	"github.com/tribunadigital/graphql-go/errors"
 	"github.com/tribunadigital/graphql-go/internal/common"
-	"github.com/tribunadigital/graphql-go/types"
 )
 
 const (
-	Query        types.OperationType = "QUERY"
-	Mutation     types.OperationType = "MUTATION"
-	Subscription types.OperationType = "SUBSCRIPTION"
+	Query        ast.OperationType = "QUERY"
+	Mutation     ast.OperationType = "MUTATION"
+	Subscription ast.OperationType = "SUBSCRIPTION"
 )
 
-func Parse(queryString string) (*types.ExecutableDefinition, *errors.QueryError) {
-	l := common.NewLexer(queryString, false)
+func Parse(queryString string) (*ast.ExecutableDefinition, *errors.QueryError) {
+	l := common.NewLexer(queryString, true)
 
-	var execDef *types.ExecutableDefinition
+	var execDef *ast.ExecutableDefinition
 	err := l.CatchSyntaxError(func() { execDef = parseExecutableDefinition(l) })
 	if err != nil {
 		return nil, err
@@ -27,12 +27,17 @@ func Parse(queryString string) (*types.ExecutableDefinition, *errors.QueryError)
 	return execDef, nil
 }
 
-func parseExecutableDefinition(l *common.Lexer) *types.ExecutableDefinition {
-	ed := &types.ExecutableDefinition{}
+func parseExecutableDefinition(l *common.Lexer) *ast.ExecutableDefinition {
+	ed := &ast.ExecutableDefinition{}
 	l.ConsumeWhitespace()
 	for l.Peek() != scanner.EOF {
+		desc := l.DescString()
+
 		if l.Peek() == '{' {
-			op := &types.OperationDefinition{Type: Query, Loc: l.Location()}
+			if desc != "" {
+				l.SyntaxError("descriptions are only supported on full-form operation, fragment, and variable definitions")
+			}
+			op := &ast.OperationDefinition{Type: Query, Loc: l.Location()}
 			op.Selections = parseSelectionSet(l)
 			ed.Operations = append(ed.Operations, op)
 			continue
@@ -43,17 +48,25 @@ func parseExecutableDefinition(l *common.Lexer) *types.ExecutableDefinition {
 		case "query":
 			op := parseOperation(l, Query)
 			op.Loc = loc
+			op.Desc = desc
 			ed.Operations = append(ed.Operations, op)
 
 		case "mutation":
-			ed.Operations = append(ed.Operations, parseOperation(l, Mutation))
+			op := parseOperation(l, Mutation)
+			op.Loc = loc
+			op.Desc = desc
+			ed.Operations = append(ed.Operations, op)
 
 		case "subscription":
-			ed.Operations = append(ed.Operations, parseOperation(l, Subscription))
+			op := parseOperation(l, Subscription)
+			op.Loc = loc
+			op.Desc = desc
+			ed.Operations = append(ed.Operations, op)
 
 		case "fragment":
 			frag := parseFragment(l)
 			frag.Loc = loc
+			frag.Desc = desc
 			ed.Fragments = append(ed.Fragments, frag)
 
 		default:
@@ -63,41 +76,44 @@ func parseExecutableDefinition(l *common.Lexer) *types.ExecutableDefinition {
 	return ed
 }
 
-func parseOperation(l *common.Lexer, opType types.OperationType) *types.OperationDefinition {
-	op := &types.OperationDefinition{Type: opType}
+func parseOperation(l *common.Lexer, opType ast.OperationType) *ast.OperationDefinition {
+	op := &ast.OperationDefinition{Type: opType}
 	op.Name.Loc = l.Location()
 	if l.Peek() == scanner.Ident {
 		op.Name = l.ConsumeIdentWithLoc()
 	}
-	op.Directives = common.ParseDirectives(l)
 	if l.Peek() == '(' {
 		l.ConsumeToken('(')
 		for l.Peek() != ')' {
+			desc := l.DescString()
 			loc := l.Location()
 			l.ConsumeToken('$')
 			iv := common.ParseInputValue(l)
 			iv.Loc = loc
+			iv.Desc = desc
 			op.Vars = append(op.Vars, iv)
 		}
 		l.ConsumeToken(')')
 	}
+	op.Directives = common.ParseDirectives(l)
 	op.Selections = parseSelectionSet(l)
 	return op
 }
 
-func parseFragment(l *common.Lexer) *types.FragmentDefinition {
-	f := &types.FragmentDefinition{}
+func parseFragment(l *common.Lexer) *ast.FragmentDefinition {
+	f := &ast.FragmentDefinition{}
 	f.Name = l.ConsumeIdentWithLoc()
 	l.ConsumeKeyword("on")
-	f.On = types.TypeName{Ident: l.ConsumeIdentWithLoc()}
+	f.On = ast.TypeName{Ident: l.ConsumeIdentWithLoc()}
 	f.Directives = common.ParseDirectives(l)
 	f.Selections = parseSelectionSet(l)
 	return f
 }
 
-func parseSelectionSet(l *common.Lexer) []types.Selection {
-	var sels []types.Selection
+func parseSelectionSet(l *common.Lexer) []ast.Selection {
+	var sels []ast.Selection
 	l.ConsumeToken('{')
+	sels = append(sels, parseSelection(l))
 	for l.Peek() != '}' {
 		sels = append(sels, parseSelection(l))
 	}
@@ -105,15 +121,15 @@ func parseSelectionSet(l *common.Lexer) []types.Selection {
 	return sels
 }
 
-func parseSelection(l *common.Lexer) types.Selection {
+func parseSelection(l *common.Lexer) ast.Selection {
 	if l.Peek() == '.' {
 		return parseSpread(l)
 	}
 	return parseFieldDef(l)
 }
 
-func parseFieldDef(l *common.Lexer) *types.Field {
-	f := &types.Field{}
+func parseFieldDef(l *common.Lexer) *ast.Field {
+	f := &ast.Field{}
 	f.Alias = l.ConsumeIdentWithLoc()
 	f.Name = f.Alias
 	if l.Peek() == ':' {
@@ -131,24 +147,24 @@ func parseFieldDef(l *common.Lexer) *types.Field {
 	return f
 }
 
-func parseSpread(l *common.Lexer) types.Selection {
+func parseSpread(l *common.Lexer) ast.Selection {
 	loc := l.Location()
 	l.ConsumeToken('.')
 	l.ConsumeToken('.')
 	l.ConsumeToken('.')
 
-	f := &types.InlineFragment{Loc: loc}
+	f := &ast.InlineFragment{Loc: loc}
 	if l.Peek() == scanner.Ident {
 		ident := l.ConsumeIdentWithLoc()
 		if ident.Name != "on" {
-			fs := &types.FragmentSpread{
+			fs := &ast.FragmentSpread{
 				Name: ident,
 				Loc:  loc,
 			}
 			fs.Directives = common.ParseDirectives(l)
 			return fs
 		}
-		f.On = types.TypeName{Ident: l.ConsumeIdentWithLoc()}
+		f.On = ast.TypeName{Ident: l.ConsumeIdentWithLoc()}
 	}
 	f.Directives = common.ParseDirectives(l)
 	f.Selections = parseSelectionSet(l)

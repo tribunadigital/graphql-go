@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
-	"strings"
 	"text/scanner"
 
+	"github.com/tribunadigital/graphql-go/ast"
 	"github.com/tribunadigital/graphql-go/errors"
-	"github.com/tribunadigital/graphql-go/types"
+	"github.com/tribunadigital/graphql-go/internal/common/norm"
 )
 
 type syntaxError string
@@ -29,7 +29,7 @@ func NewLexer(s string, useStringDescriptions bool) *Lexer {
 	sc := &scanner.Scanner{
 		Mode: scanner.ScanIdents | scanner.ScanInts | scanner.ScanFloats | scanner.ScanStrings,
 	}
-	sc.Init(strings.NewReader(s))
+	sc.Init(norm.NewReader(s)) // strings.NewReader doesn't support unicode normalization
 
 	l := Lexer{sc: sc, useStringDescriptions: useStringDescriptions}
 	l.sc.Error = l.CatchScannerError
@@ -42,6 +42,7 @@ func (l *Lexer) CatchSyntaxError(f func()) (errRes *errors.QueryError) {
 		if err := recover(); err != nil {
 			if err, ok := err.(syntaxError); ok {
 				errRes = errors.Errorf("syntax error: %s", err)
+				errRes.Err = fmt.Errorf("%w: %s", errors.ErrSyntax, err)
 				errRes.Locations = []errors.Location{l.Location()}
 				return
 			}
@@ -119,11 +120,11 @@ func (l *Lexer) ConsumeIdent() string {
 	return name
 }
 
-func (l *Lexer) ConsumeIdentWithLoc() types.Ident {
+func (l *Lexer) ConsumeIdentWithLoc() ast.Ident {
 	loc := l.Location()
 	name := l.sc.TokenText()
 	l.ConsumeToken(scanner.Ident)
-	return types.Ident{Name: name, Loc: loc}
+	return ast.Ident{Name: name, Loc: loc}
 }
 
 func (l *Lexer) ConsumeKeyword(keyword string) {
@@ -133,8 +134,13 @@ func (l *Lexer) ConsumeKeyword(keyword string) {
 	l.ConsumeWhitespace()
 }
 
-func (l *Lexer) ConsumeLiteral() *types.PrimitiveValue {
-	lit := &types.PrimitiveValue{Type: l.next, Text: l.sc.TokenText()}
+func (l *Lexer) ConsumeLiteral() *ast.PrimitiveValue {
+	lit := &ast.PrimitiveValue{Type: l.next, Text: l.sc.TokenText()}
+	if l.next == scanner.String && l.sc.Peek() == '"' {
+		// Triple-quoted block strings are tokenized as an empty string followed by
+		// another quote by text/scanner. Normalize to a regular quoted string.
+		lit.Text = strconv.Quote(l.consumeTripleQuoteComment())
+	}
 	l.ConsumeWhitespace()
 	return lit
 }
@@ -153,6 +159,10 @@ func (l *Lexer) DescComment() string {
 		return desc
 	}
 	return comment
+}
+
+func (l *Lexer) DescString() string {
+	return l.consumeDescription()
 }
 
 func (l *Lexer) SyntaxError(message string) {

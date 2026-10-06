@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	graphql "github.com/tribunadigital/graphql-go"
 	qerrors "github.com/tribunadigital/graphql-go/errors"
 	"github.com/tribunadigital/graphql-go/gqltesting"
+	"github.com/tribunadigital/graphql-go/log"
 )
 
 type rootResolver struct {
@@ -24,8 +27,10 @@ func (r *helloResolver) Hello() string {
 	return "Hello world!"
 }
 
-var resolverErr = errors.New("resolver error")
-var resolverQueryErr = &qerrors.QueryError{Message: "query", ResolverError: resolverErr}
+var (
+	errResolver      = errors.New("resolver error")
+	resolverQueryErr = &qerrors.QueryError{Message: "query", ResolverError: errResolver}
+)
 
 type helloSaidResolver struct {
 	err      error
@@ -127,7 +132,7 @@ func TestSchemaSubscribe(t *testing.T) {
 				helloSaidResolver: &helloSaidResolver{
 					upstream: closedUpstream(
 						&helloSaidEventResolver{msg: "Hello world!"},
-						&helloSaidEventResolver{err: resolverErr},
+						&helloSaidEventResolver{err: errResolver},
 						&helloSaidEventResolver{msg: "Hello again!"},
 					),
 				},
@@ -153,7 +158,7 @@ func TestSchemaSubscribe(t *testing.T) {
 					Data: json.RawMessage(`
 						null
 					`),
-					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", resolverErr)},
+					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", errResolver)},
 				},
 				{
 					Data: json.RawMessage(`
@@ -197,7 +202,7 @@ func TestSchemaSubscribe(t *testing.T) {
 		{
 			Name: "subscription_resolver_can_error",
 			Schema: graphql.MustParseSchema(schema, &rootResolver{
-				helloSaidResolver: &helloSaidResolver{err: resolverErr},
+				helloSaidResolver: &helloSaidResolver{err: errResolver},
 			}),
 			Query: `
 				subscription onHelloSaid {
@@ -211,7 +216,7 @@ func TestSchemaSubscribe(t *testing.T) {
 					Data: json.RawMessage(`
 						null
 					`),
-					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", resolverErr)},
+					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", errResolver)},
 				},
 			},
 		},
@@ -220,7 +225,7 @@ func TestSchemaSubscribe(t *testing.T) {
 			Schema: graphql.MustParseSchema(schema, &rootResolver{
 				helloSaidNullableResolver: &helloSaidNullableResolver{
 					upstream: closedUpstreamNullable(
-						&helloSaidNullableEventResolver{err: resolverErr},
+						&helloSaidNullableEventResolver{err: errResolver},
 					),
 				},
 			}),
@@ -240,14 +245,14 @@ func TestSchemaSubscribe(t *testing.T) {
 							}
 						}
 					`),
-					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", resolverErr)},
+					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", errResolver)},
 				},
 			},
 		},
 		{
 			Name: "subscription_resolver_can_error_optional_event",
 			Schema: graphql.MustParseSchema(schema, &rootResolver{
-				helloSaidNullableResolver: &helloSaidNullableResolver{err: resolverErr},
+				helloSaidNullableResolver: &helloSaidNullableResolver{err: errResolver},
 			}),
 			Query: `
 				subscription onHelloSaid {
@@ -263,7 +268,7 @@ func TestSchemaSubscribe(t *testing.T) {
 							"helloSaidNullable": null
 						}
 					`),
-					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", resolverErr)},
+					Errors: []*qerrors.QueryError{qerrors.Errorf("%s", errResolver)},
 				},
 			},
 		},
@@ -345,7 +350,6 @@ func TestRootOperations_invalidSubscriptionSchema(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -466,9 +470,73 @@ func TestError_multiple_subscription_fields(t *testing.T) {
 			Query: `subscription { helloSaid { msg } otherField }`,
 			ExpectedResults: []gqltesting.TestResponse{
 				{
-					Errors: []*qerrors.QueryError{qerrors.Errorf("can subscribe to at most one subscription at a time")},
+					Errors: []*qerrors.QueryError{{Message: "Anonymous Subscription must select only one top level field.", Locations: []qerrors.Location{{Line: 1, Column: 34}}}},
 				},
 			},
+		},
+	})
+}
+
+func TestError_subscription_skip_include_top_level_directives(t *testing.T) {
+	schema := graphql.MustParseSchema(`
+		schema {
+			query: Query
+			subscription: Subscription
+		}
+		type Query {
+			hello: String!
+		}
+		type Subscription {
+			helloSaid: HelloSaidEvent!
+			otherField: Int!
+		}
+		type HelloSaidEvent {
+			msg: String!
+		}
+	`, &rootResolver{helloSaidResolver: &helloSaidResolver{upstream: closedUpstream(&helloSaidEventResolver{msg: "Hello world!"})}})
+
+	gqltesting.RunSubscribes(t, []*gqltesting.TestSubscription{
+		{
+			Name:   "Named subscription",
+			Schema: schema,
+			Query: `
+				subscription RequiredRuntimeValidation($bool: Boolean!) {
+					helloSaid @include(if: $bool) {
+						msg
+					}
+					otherField @skip(if: $bool)
+				}
+			`,
+			Variables:   map[string]any{"bool": true},
+			ExpectedErr: qerrors.Errorf("Subscription \"RequiredRuntimeValidation\" must not use `@skip` or `@include` directives in the top level selection."),
+		},
+		{
+			Name:   "Anonymous subscription",
+			Schema: schema,
+			Query: `
+				subscription ($bool: Boolean!) {
+					helloSaid @include(if: $bool) {
+						msg
+					}
+					otherField @skip(if: $bool)
+				}
+			`,
+			Variables:   map[string]any{"bool": true},
+			ExpectedErr: qerrors.Errorf("Anonymous Subscription must not use `@skip` or `@include` directives in the top level selection."),
+		},
+		{
+			Name:        "Single field with skip directive",
+			Schema:      schema,
+			Query:       `subscription RequiredRuntimeValidation($bool: Boolean!) { otherField @skip(if: $bool) }`,
+			Variables:   map[string]any{"bool": true},
+			ExpectedErr: qerrors.Errorf("Subscription \"RequiredRuntimeValidation\" must not use `@skip` or `@include` directives in the top level selection."),
+		},
+		{
+			Name:        "Single field with include directive",
+			Schema:      schema,
+			Query:       `subscription RequiredRuntimeValidation($bool: Boolean!) { helloSaid @include(if: $bool) { msg } }`,
+			Variables:   map[string]any{"bool": true},
+			ExpectedErr: qerrors.Errorf("Subscription \"RequiredRuntimeValidation\" must not use `@skip` or `@include` directives in the top level selection."),
 		},
 	})
 }
@@ -497,7 +565,9 @@ const schema = `
 	}
 `
 
-type subscriptionsCustomTimeout struct{}
+type subscriptionsCustomTimeout struct {
+	Name string // at least one Query field is required
+}
 
 type messageResolver struct{}
 
@@ -517,14 +587,12 @@ func (r *subscriptionsCustomTimeout) OnTimeout() <-chan *messageResolver {
 }
 
 func TestSchemaSubscribe_CustomResolverTimeout(t *testing.T) {
-	r := &struct {
-		*subscriptionsCustomTimeout
-	}{
-		subscriptionsCustomTimeout: &subscriptionsCustomTimeout{},
-	}
 	gqltesting.RunSubscribe(t, &gqltesting.TestSubscription{
 		Schema: graphql.MustParseSchema(`
-			type Query {}
+			type Query {
+				# at least one Query field is required
+				name: String!
+			}
 			type Subscription {
 				onTimeout : Message!
 			}
@@ -532,7 +600,9 @@ func TestSchemaSubscribe_CustomResolverTimeout(t *testing.T) {
 			type Message {
 				msg: String!
 			}
-		`, r, graphql.SubscribeResolverTimeout(1*time.Millisecond)),
+		`, &subscriptionsCustomTimeout{Name: "test"},
+			graphql.SubscribeResolverTimeout(1*time.Nanosecond),
+			graphql.UseFieldResolvers()),
 		Query: `
 			subscription {
 				onTimeout { msg }
@@ -544,6 +614,56 @@ func TestSchemaSubscribe_CustomResolverTimeout(t *testing.T) {
 	})
 }
 
+func TestSchemaSubscribe_CustomResolverTimeout_Synctest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		gqltesting.RunSubscribe(t, &gqltesting.TestSubscription{
+			Schema: graphql.MustParseSchema(`
+				type Query {
+					# at least one Query field is required
+					name: String!
+				}
+				type Subscription {
+					onTimeout : Message!
+				}
+
+				type Message {
+					msg: String!
+				}
+			`, &subscriptionsCustomTimeout{Name: "test"},
+				graphql.SubscribeResolverTimeout(1*time.Nanosecond),
+				graphql.UseFieldResolvers()),
+			Query: `
+				subscription {
+					onTimeout { msg }
+				}
+			`,
+			ExpectedResults: []gqltesting.TestResponse{
+				{Errors: []*qerrors.QueryError{{Message: "context deadline exceeded"}}},
+			},
+		})
+	})
+}
+
+func TestSchemaSubscribe_MaxQueryLength(t *testing.T) {
+	s := graphql.MustParseSchema(schema, &rootResolver{}, graphql.MaxQueryLength(25))
+	query := `
+		subscription onHelloSaid {
+			helloSaid {
+				msg
+			}
+		}
+	`
+	expected := fmt.Sprintf("query length %d exceeds the maximum allowed query length of 25 bytes", len(query))
+
+	gqltesting.RunSubscribe(t, &gqltesting.TestSubscription{
+		Schema: s,
+		Query:  query,
+		ExpectedResults: []gqltesting.TestResponse{
+			{Errors: []*qerrors.QueryError{{Message: expected}}},
+		},
+	})
+}
+
 type subscriptionsPanicInResolver struct{}
 
 func (r *subscriptionsPanicInResolver) OnPanic() <-chan string {
@@ -551,18 +671,22 @@ func (r *subscriptionsPanicInResolver) OnPanic() <-chan string {
 }
 
 func TestSchemaSubscribe_PanicInResolver(t *testing.T) {
+	noop := log.LoggerFunc(func(_ context.Context, _ any) {})
 	r := &struct {
 		*subscriptionsPanicInResolver
+		Name string
 	}{
 		subscriptionsPanicInResolver: &subscriptionsPanicInResolver{},
 	}
 	gqltesting.RunSubscribe(t, &gqltesting.TestSubscription{
 		Schema: graphql.MustParseSchema(`
-			type Query {}
+			type Query {
+				name: String!
+			}
 			type Subscription {
 				onPanic : String!
 			}
-		`, r),
+		`, r, graphql.UseFieldResolvers(), graphql.Logger(noop)),
 		Query: `
 			subscription {
 				onPanic

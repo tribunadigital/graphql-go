@@ -2,31 +2,31 @@ package schema
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"text/scanner"
 
+	"github.com/tribunadigital/graphql-go/ast"
 	"github.com/tribunadigital/graphql-go/errors"
 	"github.com/tribunadigital/graphql-go/internal/common"
-	"github.com/tribunadigital/graphql-go/types"
 )
 
 // New initializes an instance of Schema.
-func New() *types.Schema {
-	s := &types.Schema{
-		EntryPointNames: make(map[string]string),
-		Types:           make(map[string]types.NamedType),
-		Directives:      make(map[string]*types.DirectiveDefinition),
+func New() *ast.Schema {
+	s := &ast.Schema{
+		SchemaDefinition: ast.SchemaDefinition{
+			EntryPointNames: make(map[string]string),
+		},
+		Types:      make(map[string]ast.NamedType),
+		Directives: make(map[string]*ast.DirectiveDefinition),
 	}
 	m := newMeta()
-	for n, t := range m.Types {
-		s.Types[n] = t
-	}
-	for n, d := range m.Directives {
-		s.Directives[n] = d
-	}
+	maps.Copy(s.Types, m.Types)
+	maps.Copy(s.Directives, m.Directives)
 	return s
 }
 
-func Parse(s *types.Schema, schemaString string, useStringDescriptions bool) error {
+func Parse(s *ast.Schema, schemaString string, useStringDescriptions bool) error {
 	l := common.NewLexer(schemaString, useStringDescriptions)
 	err := l.CatchSyntaxError(func() { parseSchema(s, l) })
 	if err != nil {
@@ -67,36 +67,70 @@ func Parse(s *types.Schema, schemaString string, useStringDescriptions bool) err
 			s.EntryPointNames["subscription"] = "Subscription"
 		}
 	}
-	s.EntryPoints = make(map[string]types.NamedType)
+	s.RootOperationTypes = make(map[string]ast.NamedType)
 	for key, name := range s.EntryPointNames {
 		t, ok := s.Types[name]
 		if !ok {
 			return errors.Errorf("type %q not found", name)
 		}
-		s.EntryPoints[key] = t
+		s.RootOperationTypes[key] = t
+	}
+
+	// Validate that @oneOf directive is only used on INPUT_OBJECT types
+	for _, typeDef := range s.Types {
+		switch t := typeDef.(type) {
+		case *ast.ObjectTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.InterfaceTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.Union:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.EnumTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		case *ast.ScalarTypeDefinition:
+			if t.Directives.Get("oneOf") != nil {
+				return errors.Errorf("directive \"@oneOf\" may only be used on INPUT_OBJECT types, not on %s", t.Name)
+			}
+		}
 	}
 
 	// Interface types need validation: https://spec.graphql.org/draft/#sec-Interfaces.Interfaces-Implementing-Interfaces
 	for _, typeDef := range s.Types {
 		switch t := typeDef.(type) {
-		case *types.InterfaceTypeDefinition:
+		case *ast.InterfaceTypeDefinition:
 			for i, implements := range t.Interfaces {
 				typ, ok := s.Types[implements.Name]
 				if !ok {
 					return errors.Errorf("interface %q not found", implements)
 				}
-				inteface, ok := typ.(*types.InterfaceTypeDefinition)
+				intf, ok := typ.(*ast.InterfaceTypeDefinition)
 				if !ok {
-					return errors.Errorf("type %q is not an interface", inteface)
+					return errors.Errorf("type %q is not an interface", implements.Name)
 				}
 
-				for _, f := range inteface.Fields.Names() {
-					if t.Fields.Get(f) == nil {
-						return errors.Errorf("interface %q expects field %q but %q does not provide it", inteface.Name, f, t.Name)
+				for _, f := range intf.Fields.Names() {
+					implField := t.Fields.Get(f)
+					if implField == nil {
+						return errors.Errorf("interface %q expects field %q but %q does not provide it", intf.Name, f, t.Name)
+					}
+					intfField := intf.Fields.Get(f)
+					if err := validateImplementingFieldArguments(intf.Name, t.Name, "interface", intfField, implField); err != nil {
+						return err
+					}
+					if intfField.Directives.Get("deprecated") == nil && implField.Directives.Get("deprecated") != nil {
+						return errors.Errorf("interface %q field %q is not deprecated but implementing interface %q marks it as deprecated", intf.Name, f, t.Name)
 					}
 				}
 
-				t.Interfaces[i] = inteface
+				t.Interfaces[i] = intf
 			}
 		default:
 			continue
@@ -104,7 +138,7 @@ func Parse(s *types.Schema, schemaString string, useStringDescriptions bool) err
 	}
 
 	for _, obj := range s.Objects {
-		obj.Interfaces = make([]*types.InterfaceTypeDefinition, len(obj.InterfaceNames))
+		obj.Interfaces = make([]*ast.InterfaceTypeDefinition, len(obj.InterfaceNames))
 		if err := resolveDirectives(s, obj.Directives, "OBJECT"); err != nil {
 			return err
 		}
@@ -118,13 +152,21 @@ func Parse(s *types.Schema, schemaString string, useStringDescriptions bool) err
 			if !ok {
 				return errors.Errorf("interface %q not found", intfName)
 			}
-			intf, ok := t.(*types.InterfaceTypeDefinition)
+			intf, ok := t.(*ast.InterfaceTypeDefinition)
 			if !ok {
 				return errors.Errorf("type %q is not an interface", intfName)
 			}
 			for _, f := range intf.Fields.Names() {
-				if obj.Fields.Get(f) == nil {
+				implField := obj.Fields.Get(f)
+				if implField == nil {
 					return errors.Errorf("interface %q expects field %q but %q does not provide it", intfName, f, obj.Name)
+				}
+				intfField := intf.Fields.Get(f)
+				if err := validateImplementingFieldArguments(intfName, obj.Name, "type", intfField, implField); err != nil {
+					return err
+				}
+				if intfField.Directives.Get("deprecated") == nil && implField.Directives.Get("deprecated") != nil {
+					return errors.Errorf("interface %q field %q is not deprecated but implementing type %q marks it as deprecated", intfName, f, obj.Name)
 				}
 			}
 			obj.Interfaces[i] = intf
@@ -136,13 +178,13 @@ func Parse(s *types.Schema, schemaString string, useStringDescriptions bool) err
 		if err := resolveDirectives(s, union.Directives, "UNION"); err != nil {
 			return err
 		}
-		union.UnionMemberTypes = make([]*types.ObjectTypeDefinition, len(union.TypeNames))
+		union.UnionMemberTypes = make([]*ast.ObjectTypeDefinition, len(union.TypeNames))
 		for i, name := range union.TypeNames {
 			t, ok := s.Types[name]
 			if !ok {
 				return errors.Errorf("object type %q not found", name)
 			}
-			obj, ok := t.(*types.ObjectTypeDefinition)
+			obj, ok := t.(*ast.ObjectTypeDefinition)
 			if !ok {
 				return errors.Errorf("type %q is not an object", name)
 			}
@@ -161,18 +203,100 @@ func Parse(s *types.Schema, schemaString string, useStringDescriptions bool) err
 		}
 	}
 
+	// Validate @oneOf input types and resolve directives on input objects
+	for _, typeDef := range s.Types {
+		input, ok := typeDef.(*ast.InputObject)
+		if !ok {
+			continue
+		}
+
+		if input.Directives.Get("oneOf") != nil {
+			// @oneOf is only valid on INPUT_OBJECT types - check is implicit since we're checking InputObject type
+
+			// Validate that input type has at least one field
+			if len(input.Values) == 0 {
+				return errors.Errorf("OneOf Input Object %q must define at least one field", input.Name)
+			}
+
+			// Validate that all fields are nullable (not NonNull)
+			for _, field := range input.Values {
+				if _, ok := field.Type.(*ast.NonNull); ok {
+					return errors.Errorf("OneOf input field %s.%s must be nullable.", input.Name, field.Name.Name)
+				}
+			}
+
+			// Validate that no fields have default values
+			for _, field := range input.Values {
+				if field.Default != nil {
+					return errors.Errorf("OneOf input field %s.%s cannot have a default value.", input.Name, field.Name.Name)
+				}
+			}
+		}
+
+		// Resolve directives on input and input fields
+		if err := resolveDirectives(s, input.Directives, "INPUT_OBJECT"); err != nil {
+			return err
+		}
+		for _, field := range input.Values {
+			if err := resolveDirectives(s, field.Directives, "INPUT_FIELD_DEFINITION"); err != nil {
+				return err
+			}
+		}
+	}
+
 	s.SchemaString = schemaString
 
 	return nil
 }
 
-func ParseSchema(schemaString string, useStringDescriptions bool) (*types.Schema, error) {
+func ParseSchema(schemaString string, useStringDescriptions bool) (*ast.Schema, error) {
 	s := New()
 	err := Parse(s, schemaString, useStringDescriptions)
 	return s, err
 }
 
-func mergeExtensions(s *types.Schema) error {
+func validateImplementingFieldArguments(interfaceName, implementerName, implementerKind string, intfField, implField *ast.FieldDefinition) error {
+	for _, intfArg := range intfField.Arguments {
+		implArg := implField.Arguments.Get(intfArg.Name.Name)
+		if implArg == nil {
+			return errors.Errorf("interface %q field %q expects argument %q but implementing %s %q does not provide it", interfaceName, intfField.Name, intfArg.Name.Name, implementerKind, implementerName)
+		}
+		if !typesEqual(intfArg.Type, implArg.Type) {
+			return errors.Errorf("interface %q field %q argument %q has type %q but implementing %s %q defines type %q", interfaceName, intfField.Name, intfArg.Name.Name, intfArg.Type, implementerKind, implementerName, implArg.Type)
+		}
+	}
+
+	for _, implArg := range implField.Arguments {
+		if intfField.Arguments.Get(implArg.Name.Name) != nil {
+			continue
+		}
+		if isRequiredArgument(implArg) {
+			return errors.Errorf("interface %q field %q defines additional argument %q on implementing %s %q, but additional arguments must not be required", interfaceName, intfField.Name, implArg.Name.Name, implementerKind, implementerName)
+		}
+	}
+
+	return nil
+}
+
+func isRequiredArgument(arg *ast.InputValueDefinition) bool {
+	_, isNonNull := arg.Type.(*ast.NonNull)
+	return isNonNull && arg.Default == nil
+}
+
+func typesEqual(a, b ast.Type) bool {
+	switch at := a.(type) {
+	case *ast.List:
+		bt, ok := b.(*ast.List)
+		return ok && typesEqual(at.OfType, bt.OfType)
+	case *ast.NonNull:
+		bt, ok := b.(*ast.NonNull)
+		return ok && typesEqual(at.OfType, bt.OfType)
+	default:
+		return a == b
+	}
+}
+
+func mergeExtensions(s *ast.Schema) error {
 	for _, ext := range s.Extensions {
 		typ := s.Types[ext.Type.TypeName()]
 		if typ == nil {
@@ -184,8 +308,8 @@ func mergeExtensions(s *types.Schema) error {
 		}
 
 		switch og := typ.(type) {
-		case *types.ObjectTypeDefinition:
-			e := ext.Type.(*types.ObjectTypeDefinition)
+		case *ast.ObjectTypeDefinition:
+			e := ext.Type.(*ast.ObjectTypeDefinition)
 
 			for _, field := range e.Fields {
 				if og.Fields.Get(field.Name) != nil {
@@ -203,8 +327,8 @@ func mergeExtensions(s *types.Schema) error {
 			}
 			og.InterfaceNames = append(og.InterfaceNames, e.InterfaceNames...)
 
-		case *types.InputObject:
-			e := ext.Type.(*types.InputObject)
+		case *ast.InputObject:
+			e := ext.Type.(*ast.InputObject)
 
 			for _, field := range e.Values {
 				if og.Values.Get(field.Name.Name) != nil {
@@ -213,8 +337,8 @@ func mergeExtensions(s *types.Schema) error {
 			}
 			og.Values = append(og.Values, e.Values...)
 
-		case *types.InterfaceTypeDefinition:
-			e := ext.Type.(*types.InterfaceTypeDefinition)
+		case *ast.InterfaceTypeDefinition:
+			e := ext.Type.(*ast.InterfaceTypeDefinition)
 
 			for _, field := range e.Fields {
 				if og.Fields.Get(field.Name) != nil {
@@ -223,8 +347,8 @@ func mergeExtensions(s *types.Schema) error {
 			}
 			og.Fields = append(og.Fields, e.Fields...)
 
-		case *types.Union:
-			e := ext.Type.(*types.Union)
+		case *ast.Union:
+			e := ext.Type.(*ast.Union)
 
 			for _, en := range e.TypeNames {
 				for _, on := range og.TypeNames {
@@ -235,8 +359,8 @@ func mergeExtensions(s *types.Schema) error {
 			}
 			og.TypeNames = append(og.TypeNames, e.TypeNames...)
 
-		case *types.EnumTypeDefinition:
-			e := ext.Type.(*types.EnumTypeDefinition)
+		case *ast.EnumTypeDefinition:
+			e := ext.Type.(*ast.EnumTypeDefinition)
 
 			for _, en := range e.EnumValuesDefinition {
 				for _, on := range og.EnumValuesDefinition {
@@ -254,15 +378,21 @@ func mergeExtensions(s *types.Schema) error {
 	return nil
 }
 
-func resolveNamedType(s *types.Schema, t types.NamedType) error {
+func resolveNamedType(s *ast.Schema, t ast.NamedType) error {
 	switch t := t.(type) {
-	case *types.ObjectTypeDefinition:
+	case *ast.ObjectTypeDefinition:
+		if len(t.Fields) == 0 {
+			return errors.Errorf("object type %q must define one or more fields", t.Name)
+		}
 		for _, f := range t.Fields {
 			if err := resolveField(s, f); err != nil {
 				return err
 			}
 		}
-	case *types.InterfaceTypeDefinition:
+	case *ast.InterfaceTypeDefinition:
+		if len(t.Fields) == 0 {
+			return errors.Errorf("interface type %q must define one or more fields", t.Name)
+		}
 		for _, f := range t.Fields {
 			if err := resolveField(s, f); err != nil {
 				return err
@@ -271,14 +401,17 @@ func resolveNamedType(s *types.Schema, t types.NamedType) error {
 		if err := resolveDirectives(s, t.Directives, "INTERFACE"); err != nil {
 			return err
 		}
-	case *types.InputObject:
+	case *ast.InputObject:
+		if len(t.Values) == 0 {
+			return errors.Errorf("input object type %q must define one or more fields", t.Name)
+		}
 		if err := resolveInputObject(s, t.Values); err != nil {
 			return err
 		}
 		if err := resolveDirectives(s, t.Directives, "INPUT_OBJECT"); err != nil {
 			return err
 		}
-	case *types.ScalarTypeDefinition:
+	case *ast.ScalarTypeDefinition:
 		if err := resolveDirectives(s, t.Directives, "SCALAR"); err != nil {
 			return err
 		}
@@ -286,7 +419,7 @@ func resolveNamedType(s *types.Schema, t types.NamedType) error {
 	return nil
 }
 
-func resolveField(s *types.Schema, f *types.FieldDefinition) error {
+func resolveField(s *ast.Schema, f *ast.FieldDefinition) error {
 	t, err := common.ResolveType(f.Type, s.Resolve)
 	if err != nil {
 		return err
@@ -298,7 +431,7 @@ func resolveField(s *types.Schema, f *types.FieldDefinition) error {
 	return resolveInputObject(s, f.Arguments)
 }
 
-func resolveDirectives(s *types.Schema, directives types.DirectiveList, loc string) error {
+func resolveDirectives(s *ast.Schema, directives ast.DirectiveList, loc string) error {
 	alreadySeenNonRepeatable := make(map[string]struct{})
 	for _, d := range directives {
 		dirName := d.Name.Name
@@ -306,13 +439,7 @@ func resolveDirectives(s *types.Schema, directives types.DirectiveList, loc stri
 		if !ok {
 			return errors.Errorf("directive %q not found", dirName)
 		}
-		validLoc := false
-		for _, l := range dd.Locations {
-			if l == loc {
-				validLoc = true
-				break
-			}
-		}
+		validLoc := slices.Contains(dd.Locations, loc)
 		if !validLoc {
 			return errors.Errorf("invalid location %q for directive %q (must be one of %v)", loc, dirName, dd.Locations)
 		}
@@ -323,7 +450,7 @@ func resolveDirectives(s *types.Schema, directives types.DirectiveList, loc stri
 		}
 		for _, arg := range dd.Arguments {
 			if _, ok := d.Arguments.Get(arg.Name.Name); !ok {
-				d.Arguments = append(d.Arguments, &types.Argument{Name: arg.Name, Value: arg.Default})
+				d.Arguments = append(d.Arguments, &ast.Argument{Name: arg.Name, Value: arg.Default})
 			}
 		}
 
@@ -338,7 +465,7 @@ func resolveDirectives(s *types.Schema, directives types.DirectiveList, loc stri
 	return nil
 }
 
-func resolveInputObject(s *types.Schema, values types.ArgumentsDefinition) error {
+func resolveInputObject(s *ast.Schema, values ast.ArgumentsDefinition) error {
 	for _, v := range values {
 		t, err := common.ResolveType(v.Type, s.Resolve)
 		if err != nil {
@@ -354,7 +481,7 @@ func resolveInputObject(s *types.Schema, values types.ArgumentsDefinition) error
 	return nil
 }
 
-func parseSchema(s *types.Schema, l *common.Lexer) {
+func parseSchema(s *ast.Schema, l *common.Lexer) {
 	l.ConsumeWhitespace()
 
 	for l.Peek() != scanner.EOF {
@@ -362,6 +489,10 @@ func parseSchema(s *types.Schema, l *common.Lexer) {
 		switch x := l.ConsumeIdent(); x {
 
 		case "schema":
+			s.Present = true
+			s.Loc = l.Location()
+			s.Desc = desc
+			s.SchemaDefinition.Directives = common.ParseDirectives(l)
 			l.ConsumeToken('{')
 			for l.Peek() != '}' {
 
@@ -404,7 +535,7 @@ func parseSchema(s *types.Schema, l *common.Lexer) {
 			loc := l.Location()
 			name := l.ConsumeIdent()
 			directives := common.ParseDirectives(l)
-			s.Types[name] = &types.ScalarTypeDefinition{Name: name, Desc: desc, Directives: directives, Loc: loc}
+			s.Types[name] = &ast.ScalarTypeDefinition{Name: name, Desc: desc, Directives: directives, Loc: loc}
 
 		case "directive":
 			directive := parseDirectiveDef(l)
@@ -415,20 +546,15 @@ func parseSchema(s *types.Schema, l *common.Lexer) {
 			parseExtension(s, l)
 
 		default:
-			// TODO: Add support for type extensions.
 			l.SyntaxError(fmt.Sprintf(`unexpected %q, expecting "schema", "type", "enum", "interface", "union", "input", "scalar" or "directive"`, x))
 		}
 	}
 }
 
-func parseObjectDef(l *common.Lexer) *types.ObjectTypeDefinition {
-	object := &types.ObjectTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
+func parseObjectDef(l *common.Lexer) *ast.ObjectTypeDefinition {
+	object := &ast.ObjectTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
 
-	for {
-		if l.Peek() == '{' {
-			break
-		}
-
+	for l.Peek() != '{' {
 		if l.Peek() == '@' {
 			object.Directives = common.ParseDirectives(l)
 			continue
@@ -453,19 +579,18 @@ func parseObjectDef(l *common.Lexer) *types.ObjectTypeDefinition {
 	l.ConsumeToken('}')
 
 	return object
-
 }
 
-func parseInterfaceDef(l *common.Lexer) *types.InterfaceTypeDefinition {
-	i := &types.InterfaceTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
+func parseInterfaceDef(l *common.Lexer) *ast.InterfaceTypeDefinition {
+	i := &ast.InterfaceTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
 
 	if l.Peek() == scanner.Ident {
 		l.ConsumeKeyword("implements")
-		i.Interfaces = append(i.Interfaces, &types.InterfaceTypeDefinition{Name: l.ConsumeIdent()})
+		i.Interfaces = append(i.Interfaces, &ast.InterfaceTypeDefinition{Name: l.ConsumeIdent()})
 
 		for l.Peek() == '&' {
 			l.ConsumeToken('&')
-			i.Interfaces = append(i.Interfaces, &types.InterfaceTypeDefinition{Name: l.ConsumeIdent()})
+			i.Interfaces = append(i.Interfaces, &ast.InterfaceTypeDefinition{Name: l.ConsumeIdent()})
 		}
 	}
 
@@ -478,11 +603,14 @@ func parseInterfaceDef(l *common.Lexer) *types.InterfaceTypeDefinition {
 	return i
 }
 
-func parseUnionDef(l *common.Lexer) *types.Union {
-	union := &types.Union{Loc: l.Location(), Name: l.ConsumeIdent()}
+func parseUnionDef(l *common.Lexer) *ast.Union {
+	union := &ast.Union{Loc: l.Location(), Name: l.ConsumeIdent()}
 
 	union.Directives = common.ParseDirectives(l)
 	l.ConsumeToken('=')
+	if l.Peek() == '|' {
+		l.ConsumeToken('|')
+	}
 	union.TypeNames = []string{l.ConsumeIdent()}
 	for l.Peek() == '|' {
 		l.ConsumeToken('|')
@@ -492,8 +620,8 @@ func parseUnionDef(l *common.Lexer) *types.Union {
 	return union
 }
 
-func parseInputDef(l *common.Lexer) *types.InputObject {
-	i := &types.InputObject{}
+func parseInputDef(l *common.Lexer) *ast.InputObject {
+	i := &ast.InputObject{}
 	i.Loc = l.Location()
 	i.Name = l.ConsumeIdent()
 	i.Directives = common.ParseDirectives(l)
@@ -505,13 +633,13 @@ func parseInputDef(l *common.Lexer) *types.InputObject {
 	return i
 }
 
-func parseEnumDef(l *common.Lexer) *types.EnumTypeDefinition {
-	enum := &types.EnumTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
+func parseEnumDef(l *common.Lexer) *ast.EnumTypeDefinition {
+	enum := &ast.EnumTypeDefinition{Loc: l.Location(), Name: l.ConsumeIdent()}
 
 	enum.Directives = common.ParseDirectives(l)
 	l.ConsumeToken('{')
 	for l.Peek() != '}' {
-		v := &types.EnumValueDefinition{
+		v := &ast.EnumValueDefinition{
 			Desc:       l.DescComment(),
 			Loc:        l.Location(),
 			EnumValue:  l.ConsumeIdent(),
@@ -523,10 +651,11 @@ func parseEnumDef(l *common.Lexer) *types.EnumTypeDefinition {
 	l.ConsumeToken('}')
 	return enum
 }
-func parseDirectiveDef(l *common.Lexer) *types.DirectiveDefinition {
+
+func parseDirectiveDef(l *common.Lexer) *ast.DirectiveDefinition {
 	l.ConsumeToken('@')
 	loc := l.Location()
-	d := &types.DirectiveDefinition{Name: l.ConsumeIdent(), Loc: loc}
+	d := &ast.DirectiveDefinition{Name: l.ConsumeIdent(), Loc: loc}
 
 	if l.Peek() == '(' {
 		l.ConsumeToken('(')
@@ -561,38 +690,42 @@ func parseDirectiveDef(l *common.Lexer) *types.DirectiveDefinition {
 	return d
 }
 
-func parseExtension(s *types.Schema, l *common.Lexer) {
+func parseExtension(s *ast.Schema, l *common.Lexer) {
 	loc := l.Location()
 	switch x := l.ConsumeIdent(); x {
 	case "schema":
-		l.ConsumeToken('{')
-		for l.Peek() != '}' {
-			name := l.ConsumeIdent()
-			l.ConsumeToken(':')
-			typ := l.ConsumeIdent()
-			s.EntryPointNames[name] = typ
+		s.Present = true
+		s.SchemaDefinition.Directives = append(s.SchemaDefinition.Directives, common.ParseDirectives(l)...)
+		if l.Peek() == '{' { // in schema extensions the body is optional
+			l.ConsumeToken('{')
+			for l.Peek() != '}' {
+				name := l.ConsumeIdent()
+				l.ConsumeToken(':')
+				typ := l.ConsumeIdent()
+				s.EntryPointNames[name] = typ
+			}
+			l.ConsumeToken('}')
 		}
-		l.ConsumeToken('}')
 
 	case "type":
 		obj := parseObjectDef(l)
-		s.Extensions = append(s.Extensions, &types.Extension{Type: obj, Loc: loc})
+		s.Extensions = append(s.Extensions, &ast.Extension{Type: obj, Loc: loc})
 
 	case "interface":
 		iface := parseInterfaceDef(l)
-		s.Extensions = append(s.Extensions, &types.Extension{Type: iface, Loc: loc})
+		s.Extensions = append(s.Extensions, &ast.Extension{Type: iface, Loc: loc})
 
 	case "union":
 		union := parseUnionDef(l)
-		s.Extensions = append(s.Extensions, &types.Extension{Type: union, Loc: loc})
+		s.Extensions = append(s.Extensions, &ast.Extension{Type: union, Loc: loc})
 
 	case "enum":
 		enum := parseEnumDef(l)
-		s.Extensions = append(s.Extensions, &types.Extension{Type: enum, Loc: loc})
+		s.Extensions = append(s.Extensions, &ast.Extension{Type: enum, Loc: loc})
 
 	case "input":
 		input := parseInputDef(l)
-		s.Extensions = append(s.Extensions, &types.Extension{Type: input, Loc: loc})
+		s.Extensions = append(s.Extensions, &ast.Extension{Type: input, Loc: loc})
 
 	default:
 		// TODO: Add ScalarTypeDefinition when adding directives
@@ -600,10 +733,10 @@ func parseExtension(s *types.Schema, l *common.Lexer) {
 	}
 }
 
-func parseFieldsDef(l *common.Lexer) types.FieldsDefinition {
-	var fields types.FieldsDefinition
+func parseFieldsDef(l *common.Lexer) ast.FieldsDefinition {
+	var fields ast.FieldsDefinition
 	for l.Peek() != '}' {
-		f := &types.FieldDefinition{}
+		f := &ast.FieldDefinition{}
 		f.Desc = l.DescComment()
 		f.Loc = l.Location()
 		f.Name = l.ConsumeIdent()

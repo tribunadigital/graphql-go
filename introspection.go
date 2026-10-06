@@ -39,7 +39,7 @@ var introspectionQuery = `
         name
         description
         locations
-        args {
+        args(includeDeprecated: true) {
           ...InputValue
         }
       }
@@ -52,7 +52,7 @@ var introspectionQuery = `
     fields(includeDeprecated: true) {
       name
       description
-      args {
+      args(includeDeprecated: true) {
         ...InputValue
       }
       type {
@@ -61,7 +61,7 @@ var introspectionQuery = `
       isDeprecated
       deprecationReason
     }
-    inputFields {
+    inputFields(includeDeprecated: true) {
       ...InputValue
     }
     interfaces {
@@ -82,6 +82,8 @@ var introspectionQuery = `
     description
     type { ...TypeRef }
     defaultValue
+    isDeprecated
+    deprecationReason
   }
   fragment TypeRef on __Type {
     kind

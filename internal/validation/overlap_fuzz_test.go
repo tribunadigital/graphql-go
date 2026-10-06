@@ -1,0 +1,88 @@
+package validation_test
+
+import (
+	"math/rand"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/tribunadigital/graphql-go/internal/query"
+	"github.com/tribunadigital/graphql-go/internal/schema"
+	v "github.com/tribunadigital/graphql-go/internal/validation"
+)
+
+// FuzzValidateOverlapMixed exercises the overlap validation logic with randomly generated queries
+// containing many sibling fields and fragment spreads to ensure it does not panic or explode in memory.
+// It uses a modest overlap pair cap to keep each iteration bounded.
+func FuzzValidateOverlapMixed(f *testing.F) {
+	baseQueries := []string{
+		"query{root{id}}",
+		"query Q{root{id name}}",
+	}
+	for _, q := range baseQueries {
+		f.Add(q)
+	}
+
+	s := schema.New()
+	_ = schema.Parse(s, `schema{query:Query} type Query{root: Thing} type Thing { id: ID name: String value: String }`, false)
+
+	randSource := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	f.Fuzz(func(t *testing.T, seed string) {
+		// Use hash of seed to deterministically generate but bound complexity.
+		r := rand.New(rand.NewSource(int64(len(seed)) + randSource.Int63()))
+		fieldCount := 50 + r.Intn(150) // 50-199
+		fragCount := 1 + r.Intn(5)
+
+		// Build fragments.
+		fragBodies := make([]string, fragCount)
+		for i := range fragCount {
+			// each fragment gets subset of fields
+			var body strings.Builder
+			innerFields := 5 + r.Intn(20)
+			for range innerFields {
+				body.WriteString(" f" + nameIdx(r.Intn(500)) + ":id")
+			}
+			fragBodies[i] = "fragment F" + nameIdx(i) + " on Thing{" + body.String() + " }"
+		}
+
+		// Root selection
+		var sel strings.Builder
+		sel.WriteString("query{root{")
+		for range fieldCount {
+			sel.WriteString(" a" + nameIdx(r.Intn(1000)) + ":id")
+		}
+		// Sprinkle fragment spreads
+		for i := range fragCount {
+			sel.WriteString(" ...F" + nameIdx(i))
+		}
+		sel.WriteString("}}")
+		var queryText strings.Builder
+		queryText.WriteString(sel.String())
+		for _, fb := range fragBodies {
+			queryText.WriteString(fb)
+		}
+
+		doc, err := query.Parse(queryText.String())
+		if err != nil {
+			return
+		} // parser fuzzing not our goal
+		if len(doc.Operations) == 0 {
+			return
+		}
+		// Use overlap limit to bound cost.
+		errs := v.Validate(s, doc, nil, 0, 10_000, false)
+		// Ensure no panic (implicit). Optionally sanity check: errors slice must not be ridiculously huge.
+		if len(errs) > 1000 {
+			t.Fatalf("too many errors: %d", len(errs))
+		}
+	})
+}
+
+func nameIdx(i int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	if i < len(letters) {
+		return string(letters[i])
+	}
+	return string(letters[i%len(letters)]) + nameIdx(i/len(letters))
+}

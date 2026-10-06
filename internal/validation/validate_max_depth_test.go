@@ -3,9 +3,9 @@ package validation
 import (
 	"testing"
 
+	"github.com/tribunadigital/graphql-go/ast"
 	"github.com/tribunadigital/graphql-go/internal/query"
 	"github.com/tribunadigital/graphql-go/internal/schema"
-	"github.com/tribunadigital/graphql-go/types"
 )
 
 const (
@@ -76,14 +76,14 @@ type maxDepthTestCase struct {
 	expectedErrors []string
 }
 
-func (tc maxDepthTestCase) Run(t *testing.T, s *types.Schema) {
+func (tc maxDepthTestCase) Run(t *testing.T, s *ast.Schema) {
 	t.Run(tc.name, func(t *testing.T) {
 		doc, qErr := query.Parse(tc.query)
 		if qErr != nil {
 			t.Fatal(qErr)
 		}
 
-		errs := Validate(s, doc, nil, tc.depth)
+		errs := Validate(s, doc, nil, tc.depth, 0, false)
 		if len(tc.expectedErrors) > 0 {
 			if len(errs) > 0 {
 				for _, expected := range tc.expectedErrors {
@@ -489,7 +489,7 @@ func TestMaxDepthValidation(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			context := newContext(s, doc, tc.maxDepth)
+			context := newContext(s, doc, tc.maxDepth, 0, false)
 			op := doc.Operations[0]
 
 			opc := &opContext{context: context, ops: doc.Operations}
