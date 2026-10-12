@@ -392,6 +392,10 @@ func (s *Schema) Validate(queryString string) []*errors.QueryError {
 
 // ValidateWithVariables validates the given query with the schema and the input variables.
 func (s *Schema) ValidateWithVariables(queryString string, variables map[string]any) []*errors.QueryError {
+	if err := s.validateMaxQueryLenght(queryString); err != nil {
+		return []*errors.QueryError{err}
+	}
+
 	doc, qErr := query.Parse(queryString)
 	if qErr != nil {
 		return []*errors.QueryError{qErr}
@@ -415,8 +419,8 @@ func (s *Schema) Exec(ctx context.Context, queryString string, operationName str
 }
 
 func (s *Schema) exec(ctx context.Context, queryString string, operationName string, variables map[string]any, res *resolvable.Schema) *Response {
-	if s.maxQueryLength > 0 && len(queryString) > s.maxQueryLength {
-		return &Response{Errors: []*errors.QueryError{errors.Errorf("query length %d exceeds the maximum allowed query length of %d bytes", len(queryString), s.maxQueryLength)}}
+	if err := s.validateMaxQueryLenght(queryString); err != nil {
+		return &Response{Errors: []*errors.QueryError{err}}
 	}
 	doc, qErr := query.Parse(queryString)
 	if qErr != nil {
@@ -492,6 +496,13 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 		Data:   data,
 		Errors: errs,
 	}
+}
+
+func (s *Schema) validateMaxQueryLenght(queryString string) *errors.QueryError {
+	if s.maxQueryLength > 0 && len(queryString) > s.maxQueryLength {
+		return errors.Errorf("query length %d exceeds the maximum allowed query length of %d bytes", len(queryString), s.maxQueryLength)
+	}
+	return nil
 }
 
 func (s *Schema) validateSchema() error {
