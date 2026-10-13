@@ -96,7 +96,7 @@ type fieldToExec struct {
 	out      *bytes.Buffer
 }
 
-func (f *fieldToExec) resolve(ctx context.Context, s *resolvable.Schema) (output any, err error) {
+func (f *fieldToExec) resolve(ctx context.Context, s *resolvable.Schema) (reflect.Value, error) {
 	res := f.resolver
 	if v, ok := s.ExtResolver[f.field.TypeName]; ok {
 		res = reflect.NewAt(v.Elem().Type(), unsafe.Pointer(res.Elem().UnsafeAddr()))
@@ -253,7 +253,7 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 	var err *errors.QueryError
 
 	traceCtx, finish := r.Tracer.TraceField(ctx, f.field.TraceLabel, f.field.TypeName, f.field.Name, !f.field.Async, f.field.Args)
-	defer finish(err)
+	defer func() { finish(err) }()
 
 	err = func() (err *errors.QueryError) {
 		defer func() {
@@ -276,7 +276,8 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 		if len(f.sels) > 0 && !r.DisableFieldSelections {
 			ctx = selections.With(traceCtx, f.sels)
 		}
-		res, resolverErr := f.resolve(ctx, s)
+		var resolverErr error
+		result, resolverErr = f.resolve(ctx, s)
 		if resolverErr != nil {
 			err := errors.Errorf("%s", resolverErr)
 			err.Path = path.toSlice()
@@ -286,8 +287,6 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 			}
 			return err
 		}
-
-		result = reflect.ValueOf(res)
 
 		return nil
 	}()

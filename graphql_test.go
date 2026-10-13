@@ -4711,6 +4711,64 @@ func TestQueryVariablesValidation(t *testing.T) {
 			Locations: []gqlerrors.Location{{Line: 3, Column: 5}},
 			Rule:      "VariablesOfCorrectType",
 		}},
+	}, {
+		// An entry not defined by the input object type must raise an error. The
+		// literal path already rejects this (see validateValueType); values arriving
+		// through a variable must be held to the same rule, otherwise the undefined
+		// entry is silently discarded and the request succeeds.
+		Schema: graphql.MustParseSchema(`
+			input SearchFilter {
+				required: String!
+				optional: String
+			}
+
+			type SearchResults {
+				match: String
+			}
+
+			type Query {
+				search(filter: SearchFilter!): [SearchResults!]!
+			}`, &queryVarResolver{}, graphql.UseFieldResolvers()),
+		Query: `
+			query q($filter: SearchFilter!) {
+				search(filter: $filter) {
+					match
+				}
+			}`,
+		Variables: map[string]any{"filter": map[string]any{"required": "a", "undefined": "b"}},
+		ExpectedErrors: []*gqlerrors.QueryError{{
+			Message:   "Variable \"filter\" has invalid value.\nField \"undefined\" is not defined by type \"SearchFilter\".",
+			Locations: []gqlerrors.Location{{Line: 2, Column: 12}},
+			Rule:      "VariablesOfCorrectType",
+		}},
+	}, {
+		// A near-miss name should suggest what the caller probably meant, matching
+		// the suggestion the literal path already produces.
+		Schema: graphql.MustParseSchema(`
+			input SearchFilter {
+				required: String!
+				optional: String
+			}
+
+			type SearchResults {
+				match: String
+			}
+
+			type Query {
+				search(filter: SearchFilter!): [SearchResults!]!
+			}`, &queryVarResolver{}, graphql.UseFieldResolvers()),
+		Query: `
+			query q($filter: SearchFilter!) {
+				search(filter: $filter) {
+					match
+				}
+			}`,
+		Variables: map[string]any{"filter": map[string]any{"required": "a", "optionl": "b"}},
+		ExpectedErrors: []*gqlerrors.QueryError{{
+			Message:   "Variable \"filter\" has invalid value.\nField \"optionl\" is not defined by type \"SearchFilter\". Did you mean \"optional\"?",
+			Locations: []gqlerrors.Location{{Line: 2, Column: 12}},
+			Rule:      "VariablesOfCorrectType",
+		}},
 	}})
 }
 
@@ -4798,6 +4856,14 @@ func TestCircularFragmentMaxDepth(t *testing.T) {
 
 func TestMaxQueryLength(t *testing.T) {
 	withMaxQueryLen := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.MaxQueryLength(75))
+	oversizedQuery := `
+				query HeroForEpisode {
+					hero(episode: WRATH_OF_KHAN) {
+						name
+					}
+				}
+			`
+	const expectedMessage = `query length 91 exceeds the maximum allowed query length of 75 bytes`
 	gqltesting.RunTests(t, []*gqltesting.Test{
 		{
 			Schema: withMaxQueryLen,
@@ -4813,18 +4879,26 @@ func TestMaxQueryLength(t *testing.T) {
 		},
 		{
 			Schema: withMaxQueryLen,
-			Query: `
-				query HeroForEpisode {
-					hero(episode: WRATH_OF_KHAN) {
-						name
-					}
-				}
-			`,
+			Query:  oversizedQuery,
 			ExpectedErrors: []*gqlerrors.QueryError{{
-				Message: `query length 91 exceeds the maximum allowed query length of 75 bytes`,
+				Message: expectedMessage,
 			}},
 		},
 	})
+
+	for name, validate := range map[string]func(string) []*gqlerrors.QueryError{
+		"Validate": withMaxQueryLen.Validate,
+		"ValidateWithVariables": func(query string) []*gqlerrors.QueryError {
+			return withMaxQueryLen.ValidateWithVariables(query, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			errs := validate(oversizedQuery)
+			if len(errs) != 1 || errs[0].Message != expectedMessage {
+				t.Fatalf("expected max query length error %q, got %#v", expectedMessage, errs)
+			}
+		})
+	}
 }
 
 type (
@@ -6239,6 +6313,97 @@ func TestOneOfInputValidation(t *testing.T) {
 				}
 			`,
 		},
+		{
+			// The whole input object is supplied through a variable (as opposed to
+			// the previous cases, where only a single field's value came from a
+			// variable). This exercises validateValue's *ast.InputObject case
+			// rather than validateValueType's, and must be rejected just like the
+			// literal `{}` case above.
+			Schema: schema,
+			Query: `
+				query($input: SearchInput!) {
+					searchUser(input: $input) {
+						id
+					}
+				}
+			`,
+			Variables: map[string]any{
+				"input": map[string]any{},
+			},
+			ExpectedErrors: []*gqlerrors.QueryError{
+				{
+					Message: "Variable \"input\" has invalid value.\nOneOf Input Object \"SearchInput\" must specify exactly one key.",
+					Rule:    "VariablesOfCorrectType",
+					Locations: []gqlerrors.Location{
+						{Line: 2, Column: 11},
+					},
+				},
+			},
+		},
+		{
+			Schema: schema,
+			Query: `
+				query($input: SearchInput!) {
+					searchUser(input: $input) {
+						id
+					}
+				}
+			`,
+			Variables: map[string]any{
+				"input": map[string]any{"id": "123", "email": "test@example.com"},
+			},
+			ExpectedErrors: []*gqlerrors.QueryError{
+				{
+					Message: "Variable \"input\" has invalid value.\nOneOf Input Object \"SearchInput\" must specify exactly one key.",
+					Rule:    "VariablesOfCorrectType",
+					Locations: []gqlerrors.Location{
+						{Line: 2, Column: 11},
+					},
+				},
+			},
+		},
+		{
+			Schema: schema,
+			Query: `
+				query($input: SearchInput!) {
+					searchUser(input: $input) {
+						id
+					}
+				}
+			`,
+			Variables: map[string]any{
+				"input": map[string]any{"id": nil},
+			},
+			ExpectedErrors: []*gqlerrors.QueryError{
+				{
+					Message: "Variable \"input\" has invalid value.\nField \"SearchInput.id\" must be non-null.",
+					Rule:    "VariablesOfCorrectType",
+					Locations: []gqlerrors.Location{
+						{Line: 2, Column: 11},
+					},
+				},
+			},
+		},
+		{
+			Schema: schema,
+			Query: `
+				query($input: SearchInput!) {
+					searchUser(input: $input) {
+						id
+					}
+				}
+			`,
+			Variables: map[string]any{
+				"input": map[string]any{"id": "456"},
+			},
+			ExpectedResult: `
+				{
+					"searchUser": {
+						"id": "456"
+					}
+				}
+			`,
+		},
 	})
 }
 
@@ -6369,4 +6534,149 @@ query Q {
 			})
 		}
 	})
+}
+
+// https://github.com/graph-gophers/graphql-go/issues/763
+type issue763ThingResolver interface {
+	Alpha(ctx context.Context, args struct {
+		Query *string
+		Limit *int32
+	}) (string, error)
+	Beta(ctx context.Context, args struct{ Query *string }) (string, error)
+}
+
+type issue763ConcreteThingResolver struct{}
+
+// sorts before Alpha, shifting method indices on the concrete type to reproduce #763
+func (r *issue763ConcreteThingResolver) AaExtra() string {
+	return ""
+}
+
+func (r *issue763ConcreteThingResolver) Alpha(_ context.Context, args struct {
+	Query *string
+	Limit *int32
+},
+) (string, error) {
+	return "alpha", nil
+}
+
+func (r *issue763ConcreteThingResolver) Beta(_ context.Context, args struct{ Query *string }) (string, error) {
+	return "beta", nil
+}
+
+type issueRootResolver763 struct{}
+
+func (r *issueRootResolver763) Thing() (issue763ThingResolver, error) {
+	return &issue763ConcreteThingResolver{}, nil
+}
+
+func TestInterfaceResolverMethodIndex(t *testing.T) {
+	t.Parallel()
+
+	gqltesting.RunTest(t, &gqltesting.Test{
+		Schema: graphql.MustParseSchema(`
+			type Query { thing: Thing! }
+			type Thing {
+				alpha(query: String, limit: Int): String!
+				beta(query: String): String!
+			}
+		`, &issueRootResolver763{}),
+		Query:          `{ thing { beta(query: "test") } }`,
+		ExpectedResult: `{"thing":{"beta":"beta"}}`,
+	})
+}
+
+type issue763ListUnionNodeResolver interface {
+	Label(ctx context.Context, args struct{ Query *string }) (string, error)
+}
+
+type issue763ListUnionConcreteNodeResolver struct{}
+
+// sorts before Label, shifting method indices on the concrete type to reproduce #763
+func (r *issue763ListUnionConcreteNodeResolver) AaExtra() string {
+	return ""
+}
+
+func (r *issue763ListUnionConcreteNodeResolver) Label(_ context.Context, args struct{ Query *string }) (string, error) {
+	return "label:" + *args.Query, nil
+}
+
+type issue763ListUnionSearchResultResolver struct{}
+
+func (r *issue763ListUnionSearchResultResolver) ToNodeImpl() (issue763ListUnionNodeResolver, bool) {
+	return &issue763ListUnionConcreteNodeResolver{}, true
+}
+
+type issue763ListUnionRootResolver struct{}
+
+func (r *issue763ListUnionRootResolver) Search() ([]*issue763ListUnionSearchResultResolver, error) {
+	return []*issue763ListUnionSearchResultResolver{{}}, nil
+}
+
+func TestIssue763InterfaceMethodIndexInListUnion(t *testing.T) {
+	t.Parallel()
+
+	gqltesting.RunTest(t, &gqltesting.Test{
+		Schema: graphql.MustParseSchema(`
+			type Query { search: [Search!]! }
+			union Search = NodeImpl
+			type NodeImpl {
+				label(query: String): String!
+			}
+		`, &issue763ListUnionRootResolver{}),
+		Query:          `{ search { ... on NodeImpl { label(query: "x") } } }`,
+		ExpectedResult: `{"search":[{"label":"label:x"}]}`,
+	})
+}
+
+type issue772ErrorRecordingTracer struct {
+	mu       sync.Mutex
+	fieldErr map[string]*gqlerrors.QueryError
+}
+
+func (t *issue772ErrorRecordingTracer) TraceQuery(ctx context.Context, queryString string, operationName string, variables map[string]any, varTypes map[string]*introspection.Type) (context.Context, func([]*gqlerrors.QueryError)) {
+	return ctx, func([]*gqlerrors.QueryError) {}
+}
+
+func (t *issue772ErrorRecordingTracer) TraceField(ctx context.Context, label, typeName, fieldName string, trivial bool, args map[string]any) (context.Context, func(*gqlerrors.QueryError)) {
+	return ctx, func(err *gqlerrors.QueryError) {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.fieldErr == nil {
+			t.fieldErr = make(map[string]*gqlerrors.QueryError)
+		}
+		t.fieldErr[typeName+"."+fieldName] = err
+	}
+}
+
+// https://github.com/graph-gophers/graphql-go/issues/772
+func TestIssue778TraceFieldReceivesResolverError(t *testing.T) {
+	t.Parallel()
+
+	rt := &issue772ErrorRecordingTracer{}
+	schema := graphql.MustParseSchema(`
+		schema {
+			query: Query
+		}
+
+		type Query {
+			FindDroid: Droid!
+			FindHuman: String
+		}
+		type Droid {
+			Name: String!
+		}
+	`, &findDroidOrHumanResolver{}, graphql.Tracer(rt))
+
+	schema.Exec(context.Background(), `{ FindDroid { Name } FindHuman }`, "", nil)
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if err := rt.fieldErr["Query.FindDroid"]; err == nil {
+		t.Error("TraceField finish func for Query.FindDroid was called with a nil error, want the resolver's error")
+	}
+	if err := rt.fieldErr["Query.FindHuman"]; err != nil {
+		t.Errorf("TraceField finish func for Query.FindHuman was called with error %v, want nil", err)
+	}
 }
